@@ -2,6 +2,8 @@
 
 // Listen for installation
 chrome.runtime.onInstalled.addListener((details) => {
+  console.log('Smart Job Autofill extension event:', details.reason);
+  
   if (details.reason === 'install') {
     console.log('Smart Job Autofill extension installed');
     
@@ -16,6 +18,21 @@ chrome.runtime.onInstalled.addListener((details) => {
       learnedResponses: {}
     });
   }
+  
+  // Create context menu
+  try {
+    chrome.contextMenus.create({
+      id: 'fillCurrentForm',
+      title: 'Fill this form with Smart Autofill',
+      contexts: ['page']
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.log('Context menu already exists or error:', chrome.runtime.lastError.message);
+      }
+    });
+  } catch (error) {
+    console.error('Error creating context menu:', error);
+  }
 });
 
 // Listen for messages from content scripts or popup
@@ -28,19 +45,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true;
 });
 
-// Context menu for quick actions (right-click menu)
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: 'fillCurrentForm',
-    title: 'Fill this form with Smart Autofill',
-    contexts: ['page']
-  });
-});
-
+// Handle context menu clicks
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'fillCurrentForm') {
-    chrome.tabs.sendMessage(tab.id, { action: 'fillForm' });
+    chrome.tabs.sendMessage(tab.id, { action: 'fillForm' }).catch(err => {
+      console.error('Error sending message to tab:', err);
+    });
   }
 });
 
-console.log('Background service worker loaded');
+console.log('Background service worker loaded successfully');
