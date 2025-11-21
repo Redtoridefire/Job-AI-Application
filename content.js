@@ -10,13 +10,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+// Track which fields have been filled to avoid duplicate filling
+const filledFields = new WeakSet();
+
 // Main form filling function
 async function fillCurrentForm() {
   try {
     // Get user data and settings from storage
     const data = await chrome.storage.local.get([
       'fullName', 'email', 'phone', 'linkedin', 'location',
-      'resumeData', 'learnedResponses', 'fillSpeed', 
+      'resumeData', 'learnedResponses', 'fillSpeed',
       'autoFillEnabled', 'learnMode', 'smartMode', 'workAuth'
     ]);
 
@@ -26,17 +29,30 @@ async function fillCurrentForm() {
 
     const fillSpeed = data.fillSpeed || 500;
     const learnedResponses = data.learnedResponses || {};
-    
+
     // Find all form fields
     const fields = findFormFields();
-    
+
     let filledCount = 0;
 
     for (const field of fields) {
+      // Skip if already filled by us
+      if (filledFields.has(field.element)) {
+        continue;
+      }
+
+      // Skip if field already has a value (user might have filled it)
+      if (field.element.value && field.element.value.trim()) {
+        continue;
+      }
+
       await new Promise(resolve => setTimeout(resolve, fillSpeed));
-      
+
       const filled = await fillField(field, data, learnedResponses);
-      if (filled) filledCount++;
+      if (filled) {
+        filledCount++;
+        filledFields.add(field.element);
+      }
     }
 
     console.log(`Auto-filled ${filledCount} fields`);
@@ -192,50 +208,144 @@ function getNearbyText(element) {
 function smartMatch(fieldInfo, userData) {
   const search = fieldInfo.searchString;
 
-  // Name fields
-  if (matchesAny(search, ['full name', 'your name', 'first name', 'last name', 'legal name', 'candidate name'])) {
-    if (matchesAny(search, ['first name', 'first_name', 'firstname']) && !matchesAny(search, ['last', 'full'])) {
+  // Name fields - expanded patterns
+  if (matchesAny(search, [
+    'full name', 'your name', 'first name', 'last name', 'legal name',
+    'candidate name', 'applicant name', 'given name', 'family name',
+    'fname', 'lname', 'firstname', 'lastname', 'name'
+  ])) {
+    // First name
+    if (matchesAny(search, ['first name', 'first_name', 'firstname', 'fname', 'given name', 'given_name'])
+        && !matchesAny(search, ['last', 'full', 'family'])) {
       return userData.fullName ? userData.fullName.split(' ')[0] : '';
     }
-    if (matchesAny(search, ['last name', 'last_name', 'lastname', 'surname']) && !matchesAny(search, ['first', 'full'])) {
+    // Last name
+    if (matchesAny(search, ['last name', 'last_name', 'lastname', 'lname', 'surname', 'family name', 'family_name'])
+        && !matchesAny(search, ['first', 'full', 'given'])) {
       return userData.fullName ? userData.fullName.split(' ').slice(-1)[0] : '';
     }
+    // Middle name - return empty for now
+    if (matchesAny(search, ['middle name', 'middle_name', 'middlename', 'middle initial'])) {
+      return '';
+    }
+    // Full name
     return userData.fullName || '';
   }
 
-  // Email fields
-  if (matchesAny(search, ['email', 'e-mail', 'mail']) && fieldInfo.type === 'email') {
+  // Email fields - more patterns
+  if (matchesAny(search, [
+    'email', 'e-mail', 'mail', 'email address', 'e-mail address',
+    'contact email', 'your email', 'applicant email'
+  ]) || fieldInfo.type === 'email') {
     return userData.email || '';
   }
 
-  // Phone fields
-  if (matchesAny(search, ['phone', 'mobile', 'telephone', 'cell']) && 
-      (fieldInfo.type === 'tel' || matchesAny(search, ['number']))) {
+  // Phone fields - expanded patterns
+  if (matchesAny(search, [
+    'phone', 'mobile', 'telephone', 'cell', 'phone number',
+    'mobile number', 'cell phone', 'contact number', 'tel',
+    'primary phone', 'home phone', 'work phone'
+  ]) || fieldInfo.type === 'tel') {
     return userData.phone || '';
   }
 
   // LinkedIn fields
-  if (matchesAny(search, ['linkedin', 'linked-in', 'linkedin profile', 'linkedin url'])) {
+  if (matchesAny(search, [
+    'linkedin', 'linked-in', 'linkedin profile', 'linkedin url',
+    'linkedin.com', 'social profile', 'professional profile'
+  ])) {
     return userData.linkedin || '';
   }
 
-  // Location/Address fields
-  if (matchesAny(search, ['city', 'location', 'address', 'where are you', 'where do you live'])) {
-    if (matchesAny(search, ['zip', 'postal'])) return '';
-    if (matchesAny(search, ['state'])) return userData.location ? userData.location.split(',')[1]?.trim() : '';
+  // Location/Address fields - expanded patterns
+  if (matchesAny(search, [
+    'city', 'location', 'address', 'where are you', 'where do you live',
+    'current location', 'residence', 'living in', 'based in',
+    'home address', 'street address', 'mailing address'
+  ])) {
+    // Skip zip/postal codes
+    if (matchesAny(search, ['zip', 'postal', 'postcode', 'zip code'])) return '';
+    // State only
+    if (matchesAny(search, ['state', 'province', 'region']) && !matchesAny(search, ['city', 'address'])) {
+      return userData.location ? userData.location.split(',')[1]?.trim() : '';
+    }
+    // City only
+    if (matchesAny(search, ['city']) && !matchesAny(search, ['state', 'zip'])) {
+      return userData.location ? userData.location.split(',')[0]?.trim() : '';
+    }
+    // Country
+    if (matchesAny(search, ['country'])) {
+      return 'United States'; // Default - can be customized
+    }
+    // Full location
     return userData.location || '';
   }
 
-  // Work authorization
-  if (matchesAny(search, ['work authorization', 'authorized to work', 'work permit', 'visa', 'sponsorship', 'legally authorized'])) {
-    return userData.workAuth || '';
+  // Work authorization - expanded patterns
+  if (matchesAny(search, [
+    'work authorization', 'authorized to work', 'work permit',
+    'visa', 'sponsorship', 'legally authorized', 'eligible to work',
+    'require sponsorship', 'work eligibility', 'employment authorization',
+    'right to work', 'authorized in'
+  ])) {
+    return userData.workAuth || 'Yes';
   }
 
-  // Yes/No questions - commonly answered "Yes"
+  // Job title / position applying for
+  if (matchesAny(search, [
+    'job title', 'position', 'role', 'position title',
+    'desired position', 'applying for', 'job role'
+  ])) {
+    // Will be filled from learned data if available
+    return null;
+  }
+
+  // Years of experience
+  if (matchesAny(search, [
+    'years of experience', 'experience', 'years experience',
+    'total experience', 'professional experience'
+  ]) && !matchesAny(search, ['describe', 'detail', 'tell us'])) {
+    // Return a number if it's a number field
+    if (fieldInfo.type === 'number') {
+      return null; // Will learn from user
+    }
+  }
+
+  // Salary expectations
+  if (matchesAny(search, [
+    'salary', 'compensation', 'expected salary', 'salary expectation',
+    'desired salary', 'pay rate', 'hourly rate', 'annual salary'
+  ])) {
+    return null; // User should fill this manually
+  }
+
+  // Start date / availability
+  if (matchesAny(search, [
+    'start date', 'available to start', 'availability',
+    'when can you start', 'earliest start date', 'notice period'
+  ])) {
+    if (fieldInfo.type === 'date') {
+      // Suggest 2 weeks from now
+      const twoWeeks = new Date();
+      twoWeeks.setDate(twoWeeks.getDate() + 14);
+      return twoWeeks.toISOString().split('T')[0];
+    }
+    return 'Immediately'; // Or can be learned
+  }
+
+  // Yes/No questions - expanded
   if (fieldInfo.type === 'radio' || fieldInfo.type === 'select') {
-    // Are you 18 or older?
-    if (matchesAny(search, ['18', 'age', 'years old', 'over 18'])) {
+    // Age verification
+    if (matchesAny(search, ['18', 'age', 'years old', 'over 18', 'at least 18'])) {
       return 'yes';
+    }
+    // Criminal record (usually no)
+    if (matchesAny(search, ['criminal', 'convicted', 'felony'])) {
+      return 'no';
+    }
+    // Driver's license
+    if (matchesAny(search, ['driver', 'license', 'drive'])) {
+      return 'yes'; // Can be customized
     }
   }
 
@@ -249,17 +359,73 @@ function matchesAny(searchString, patterns) {
 
 // Find learned response for a field
 function findLearnedResponse(fieldInfo, learnedResponses) {
-  // Create a key from field info
-  const possibleKeys = [
-    fieldInfo.id,
-    fieldInfo.name,
-    fieldInfo.label,
-    fieldInfo.searchString.substring(0, 100)
-  ].filter(k => k && k.length > 3);
+  if (!learnedResponses || Object.keys(learnedResponses).length === 0) {
+    return null;
+  }
 
-  for (const key of possibleKeys) {
+  // Try exact matches first
+  const exactKeys = [
+    fieldInfo.id,
+    fieldInfo.name
+  ].filter(k => k && k.length > 2);
+
+  for (const key of exactKeys) {
     if (learnedResponses[key]) {
+      console.log(`Found exact learned match for "${key}": ${learnedResponses[key]}`);
       return learnedResponses[key];
+    }
+  }
+
+  // Try fuzzy matching based on label and search string
+  const searchTerms = [
+    fieldInfo.label,
+    fieldInfo.placeholder,
+    fieldInfo.ariaLabel
+  ].filter(term => term && term.length > 3);
+
+  for (const term of searchTerms) {
+    const normalizedTerm = term.toLowerCase().trim();
+
+    // Check each learned response
+    for (const [learnedKey, learnedValue] of Object.entries(learnedResponses)) {
+      const normalizedKey = learnedKey.toLowerCase().trim();
+
+      // Check for similarity
+      if (normalizedKey === normalizedTerm ||
+          normalizedKey.includes(normalizedTerm) ||
+          normalizedTerm.includes(normalizedKey)) {
+        console.log(`Found fuzzy learned match for "${term}" -> "${learnedKey}": ${learnedValue}`);
+        return learnedValue;
+      }
+    }
+  }
+
+  // Try semantic matching for common patterns
+  const search = fieldInfo.searchString.toLowerCase();
+
+  for (const [learnedKey, learnedValue] of Object.entries(learnedResponses)) {
+    const keyLower = learnedKey.toLowerCase();
+
+    // Job title matching
+    if ((matchesAny(search, ['job title', 'position', 'role']) &&
+         matchesAny(keyLower, ['job title', 'position', 'role'])) ||
+        (matchesAny(search, ['title']) && matchesAny(keyLower, ['title']))) {
+      console.log(`Semantic match for job title: ${learnedValue}`);
+      return learnedValue;
+    }
+
+    // Experience matching
+    if (matchesAny(search, ['years of experience', 'experience years']) &&
+        matchesAny(keyLower, ['experience', 'years'])) {
+      console.log(`Semantic match for experience: ${learnedValue}`);
+      return learnedValue;
+    }
+
+    // Salary matching
+    if (matchesAny(search, ['salary', 'compensation']) &&
+        matchesAny(keyLower, ['salary', 'compensation', 'pay'])) {
+      console.log(`Semantic match for salary: ${learnedValue}`);
+      return learnedValue;
     }
   }
 
@@ -379,19 +545,118 @@ chrome.storage.local.get(['autoFillEnabled'], (data) => {
   if (data.autoFillEnabled) {
     // Wait for page to fully load
     if (document.readyState === 'complete') {
-      checkForForms();
+      setTimeout(() => autoFillOnLoad(), 2000); // Wait 2s for dynamic content
     } else {
-      window.addEventListener('load', checkForForms);
+      window.addEventListener('load', () => {
+        setTimeout(() => autoFillOnLoad(), 2000);
+      });
     }
   }
 });
 
-// Check if page has forms and show subtle indicator
-function checkForForms() {
+// Check if page has forms and automatically fill them
+async function autoFillOnLoad() {
   const forms = document.querySelectorAll('form');
-  if (forms.length > 0) {
-    console.log(`Found ${forms.length} form(s) on this page`);
+  const inputs = document.querySelectorAll('input, textarea, select');
+
+  if (forms.length > 0 || inputs.length > 0) {
+    console.log(`Found ${forms.length} form(s) and ${inputs.length} field(s) - auto-filling...`);
+    await fillCurrentForm();
+
+    // After filling, check if we should auto-navigate
+    setTimeout(() => checkAutoNavigation(), 1000);
   }
+}
+
+// Dynamic form detection - watch for forms added after page load
+chrome.storage.local.get(['autoFillEnabled'], (data) => {
+  if (data.autoFillEnabled) {
+    initDynamicFormDetection();
+  }
+});
+
+function initDynamicFormDetection() {
+  let formCheckTimeout;
+  let lastFieldCount = 0;
+  let fillAttempts = 0;
+  const maxFillAttempts = 3; // Limit fills per page to avoid loops
+
+  const observer = new MutationObserver((mutations) => {
+    // Debounce - only check after mutations stop for 1 second
+    clearTimeout(formCheckTimeout);
+    formCheckTimeout = setTimeout(async () => {
+      // Don't attempt too many fills on the same page
+      if (fillAttempts >= maxFillAttempts) {
+        return;
+      }
+
+      const newInputs = document.querySelectorAll('input, textarea, select');
+      const emptyFields = Array.from(newInputs).filter(input =>
+        !input.value || !input.value.trim()
+      );
+
+      // Only try to fill if there are new empty fields
+      if (emptyFields.length > 0 && emptyFields.length !== lastFieldCount) {
+        console.log(`Detected ${emptyFields.length} empty fields - attempting auto-fill...`);
+        lastFieldCount = emptyFields.length;
+        fillAttempts++;
+
+        await fillCurrentForm();
+        setTimeout(() => checkAutoNavigation(), 1000);
+      }
+    }, 1000);
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  console.log('Dynamic form detection enabled');
+}
+
+// Auto-navigation - find and click continue/next buttons
+async function checkAutoNavigation() {
+  const data = await chrome.storage.local.get(['autoNavigate']);
+
+  // Only auto-navigate if explicitly enabled (default off for safety)
+  if (!data.autoNavigate) {
+    return;
+  }
+
+  // Find buttons that might be "continue" or "next" buttons
+  const buttons = document.querySelectorAll('button, input[type="submit"], input[type="button"], a[role="button"]');
+
+  for (const button of buttons) {
+    const text = (button.textContent || button.value || '').toLowerCase().trim();
+    const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+    const buttonText = text + ' ' + ariaLabel;
+
+    // Check if this is a continue/next/save button
+    if (matchesAny(buttonText, [
+      'continue', 'next', 'save and continue', 'save & continue',
+      'submit', 'proceed', 'move forward', 'go to next',
+      'save and next', 'save & next'
+    ])) {
+      // Skip if it's a "cancel" or "back" button
+      if (matchesAny(buttonText, ['cancel', 'back', 'previous', 'skip'])) {
+        continue;
+      }
+
+      console.log(`Found navigation button: "${text}" - clicking...`);
+
+      // Highlight button before clicking
+      button.style.outline = '3px solid #10b981';
+
+      setTimeout(() => {
+        button.click();
+      }, 500);
+
+      return;
+    }
+  }
+
+  console.log('No navigation button found');
 }
 
 // Learning mode - observe user interactions to learn preferences
@@ -423,36 +688,63 @@ async function learnFromForm(form) {
   const learnedData = await chrome.storage.local.get(['learnedResponses']);
   const learnedResponses = learnedData.learnedResponses || {};
 
+  let learnedCount = 0;
+
   fields.forEach(field => {
     if (field.value && field.value.trim()) {
       const fieldInfo = getFieldInfo(field);
-      const key = fieldInfo.name || fieldInfo.id || fieldInfo.label;
-      
-      if (key && key.length > 3) {
-        learnedResponses[key] = field.value;
+
+      // Use multiple keys for better matching later
+      const keys = [];
+
+      if (fieldInfo.name && fieldInfo.name.length > 2) {
+        keys.push(fieldInfo.name);
       }
+      if (fieldInfo.id && fieldInfo.id.length > 2) {
+        keys.push(fieldInfo.id);
+      }
+      if (fieldInfo.label && fieldInfo.label.length > 3) {
+        keys.push(fieldInfo.label.trim());
+      }
+
+      // Store under all possible keys
+      keys.forEach(key => {
+        learnedResponses[key] = field.value;
+        learnedCount++;
+      });
     }
   });
 
-  await chrome.storage.local.set({ learnedResponses });
-  console.log('Learned from form submission');
+  if (learnedCount > 0) {
+    await chrome.storage.local.set({ learnedResponses });
+    console.log(`Learned ${learnedCount} field(s) from form submission`);
+  }
 }
 
 async function learnFromField(field) {
   if (!field.value || !field.value.trim()) return;
 
   const fieldInfo = getFieldInfo(field);
-  const key = fieldInfo.name || fieldInfo.id || fieldInfo.label;
-  
-  if (!key || key.length < 3) return;
+
+  // Build learning keys
+  const keys = [];
+  if (fieldInfo.name && fieldInfo.name.length > 2) keys.push(fieldInfo.name);
+  if (fieldInfo.id && fieldInfo.id.length > 2) keys.push(fieldInfo.id);
+  if (fieldInfo.label && fieldInfo.label.length > 3) keys.push(fieldInfo.label.trim());
+
+  if (keys.length === 0) return;
 
   const learnedData = await chrome.storage.local.get(['learnedResponses']);
   const learnedResponses = learnedData.learnedResponses || {};
-  
-  learnedResponses[key] = field.value;
+
+  // Store under all keys
+  keys.forEach(key => {
+    learnedResponses[key] = field.value;
+  });
+
   await chrome.storage.local.set({ learnedResponses });
-  
-  console.log(`Learned: ${key} = ${field.value}`);
+
+  console.log(`Learned: ${keys[0]} = ${field.value} (${keys.length} key(s))`);
 }
 
 console.log('Smart Job Autofill extension loaded');
