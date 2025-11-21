@@ -1,0 +1,22 @@
+# Extension packaging
+*.pem
+*.crx
+extension.zip
+
+# Node modules (if using npm)
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.log
+*.tmp
+
+# Development
+auto-reload-enabled.js
