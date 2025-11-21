@@ -170,12 +170,13 @@ saveProfileBtn.addEventListener('click', async () => {
 // Load settings
 async function loadSettings() {
   const data = await chrome.storage.local.get([
-    'autoFillEnabled', 'learnMode', 'smartMode', 'fillSpeed', 'workAuth'
+    'autoFillEnabled', 'learnMode', 'smartMode', 'autoNavigate', 'fillSpeed', 'workAuth'
   ]);
 
   document.getElementById('auto-fill-enabled').checked = data.autoFillEnabled !== false;
   document.getElementById('learn-mode').checked = data.learnMode !== false;
   document.getElementById('smart-mode').checked = data.smartMode !== false;
+  document.getElementById('auto-navigate').checked = data.autoNavigate === true; // Default off
   document.getElementById('fill-speed').value = data.fillSpeed || 500;
   document.getElementById('speed-value').textContent = (data.fillSpeed || 500) + 'ms';
   document.getElementById('work-auth').value = data.workAuth || '';
@@ -187,12 +188,13 @@ saveSettingsBtn.addEventListener('click', async () => {
     autoFillEnabled: document.getElementById('auto-fill-enabled').checked,
     learnMode: document.getElementById('learn-mode').checked,
     smartMode: document.getElementById('smart-mode').checked,
+    autoNavigate: document.getElementById('auto-navigate').checked,
     fillSpeed: parseInt(document.getElementById('fill-speed').value),
     workAuth: document.getElementById('work-auth').value
   };
 
   await chrome.storage.local.set(settings);
-  
+
   const originalText = saveSettingsBtn.textContent;
   saveSettingsBtn.textContent = '✅ Saved!';
   setTimeout(() => {
