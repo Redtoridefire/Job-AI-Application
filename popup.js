@@ -11,6 +11,9 @@ const clearLearnedBtn = document.getElementById('clear-learned');
 const fillSpeedInput = document.getElementById('fill-speed');
 const speedValue = document.getElementById('speed-value');
 const learnedDataList = document.getElementById('learned-data-list');
+const exportCsvBtn = document.getElementById('export-csv');
+const clearHistoryBtn = document.getElementById('clear-history');
+const historyList = document.getElementById('history-list');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -19,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadLearnedData();
   loadStats();
   checkCurrentSite();
+  loadHistory();
 });
 
 // Check if current site is on the job site allowlist
@@ -328,3 +332,172 @@ async function incrementFormsFilled() {
 function truncate(str, maxLen) {
   return str.length > maxLen ? str.substring(0, maxLen) + '...' : str;
 }
+
+// Load application history
+async function loadHistory() {
+  const data = await chrome.storage.local.get(['applicationHistory']);
+  const history = data.applicationHistory || [];
+
+  // Update stats
+  updateHistoryStats(history);
+
+  // Display history list
+  displayHistoryList(history);
+}
+
+// Update history statistics
+function updateHistoryStats(history) {
+  const now = Date.now();
+  const oneWeekAgo = now - (7 * 24 * 60 * 60 * 1000);
+  const oneMonthAgo = now - (30 * 24 * 60 * 60 * 1000);
+
+  const thisWeekCount = history.filter(app => app.timestamp > oneWeekAgo).length;
+  const thisMonthCount = history.filter(app => app.timestamp > oneMonthAgo).length;
+
+  document.getElementById('total-applications').textContent = history.length;
+  document.getElementById('this-week-count').textContent = thisWeekCount;
+  document.getElementById('this-month-count').textContent = thisMonthCount;
+}
+
+// Display history list
+function displayHistoryList(history) {
+  historyList.innerHTML = '';
+
+  if (history.length === 0) {
+    historyList.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">📋</div>
+        <p>No applications tracked yet</p>
+        <p style="font-size: 12px; margin-top: 8px;">Start applying to jobs and we'll track them here!</p>
+      </div>
+    `;
+    return;
+  }
+
+  history.forEach((app, index) => {
+    const date = new Date(app.date);
+    const dateStr = date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+    const timeStr = date.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.style.cssText = `
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #f9fafb;
+      border-radius: 8px;
+      border-left: 4px solid #10b981;
+      cursor: pointer;
+      transition: all 0.2s;
+    `;
+
+    item.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 5px;">
+        <div style="font-weight: 600; color: #111827; flex: 1;">${truncate(app.jobTitle, 40)}</div>
+        <button class="delete-app-btn" data-id="${app.id}" style="background: none; border: none; color: #ef4444; cursor: pointer; padding: 0 5px; font-size: 16px;">×</button>
+      </div>
+      <div style="font-size: 13px; color: #6b7280; margin-bottom: 3px;">🏢 ${truncate(app.company, 35)}</div>
+      <div style="font-size: 12px; color: #9ca3af;">📅 ${dateStr} at ${timeStr}</div>
+      <div style="font-size: 11px; color: #9ca3af; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔗 ${app.hostname}</div>
+    `;
+
+    // Click to open URL
+    item.addEventListener('click', (e) => {
+      if (!e.target.classList.contains('delete-app-btn')) {
+        chrome.tabs.create({ url: app.url });
+      }
+    });
+
+    // Hover effect
+    item.addEventListener('mouseenter', () => {
+      item.style.background = '#e5e7eb';
+    });
+    item.addEventListener('mouseleave', () => {
+      item.style.background = '#f9fafb';
+    });
+
+    historyList.appendChild(item);
+  });
+
+  // Add delete functionality
+  document.querySelectorAll('.delete-app-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      if (confirm('Delete this application from history?')) {
+        await deleteApplication(id);
+        loadHistory();
+      }
+    });
+  });
+}
+
+// Delete a single application
+async function deleteApplication(id) {
+  const data = await chrome.storage.local.get(['applicationHistory']);
+  const history = data.applicationHistory || [];
+  const filtered = history.filter(app => app.id !== id);
+  await chrome.storage.local.set({ applicationHistory: filtered });
+}
+
+// Export history to CSV
+exportCsvBtn.addEventListener('click', async () => {
+  const data = await chrome.storage.local.get(['applicationHistory']);
+  const history = data.applicationHistory || [];
+
+  if (history.length === 0) {
+    alert('No applications to export!');
+    return;
+  }
+
+  // Create CSV content
+  const headers = ['Date', 'Time', 'Job Title', 'Company', 'URL'];
+  const rows = history.map(app => {
+    const date = new Date(app.date);
+    return [
+      date.toLocaleDateString('en-US'),
+      date.toLocaleTimeString('en-US'),
+      `"${app.jobTitle.replace(/"/g, '""')}"`,
+      `"${app.company.replace(/"/g, '""')}"`,
+      app.url
+    ];
+  });
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(row => row.join(','))
+  ].join('\n');
+
+  // Download CSV
+  const blob = new Blob([csvContent], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `job-applications-${Date.now()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Show success message
+  const originalText = exportCsvBtn.textContent;
+  exportCsvBtn.textContent = '✅ Exported!';
+  setTimeout(() => {
+    exportCsvBtn.textContent = originalText;
+  }, 2000);
+});
+
+// Clear history
+clearHistoryBtn.addEventListener('click', async () => {
+  if (confirm('Are you sure you want to clear all application history? This cannot be undone.')) {
+    await chrome.storage.local.set({ applicationHistory: [] });
+    loadHistory();
+  }
+});

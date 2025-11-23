@@ -17,6 +17,7 @@
       <button class="tab-btn active" data-tab="profile">Profile</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
       <button class="tab-btn" data-tab="learned">Learned Data</button>
+      <button class="tab-btn" data-tab="history">History</button>
     </div>
 
     <!-- Profile Tab -->
@@ -141,6 +142,36 @@
         <p class="info-text">Questions you've answered that the extension has learned:</p>
         <div id="learned-data-list"></div>
         <button class="btn btn-secondary" id="clear-learned">🗑️ Clear All Learned Data</button>
+      </div>
+    </div>
+
+    <!-- History Tab -->
+    <div class="tab-content" id="history-tab">
+      <div class="section">
+        <h3>📊 Application History</h3>
+        <p class="info-text">Track all the jobs you've applied to:</p>
+
+        <div class="history-stats" style="display: flex; gap: 15px; margin: 15px 0; padding: 15px; background: #f3f4f6; border-radius: 8px;">
+          <div style="flex: 1; text-align: center;">
+            <div style="font-size: 24px; font-weight: bold; color: #10b981;" id="total-applications">0</div>
+            <div style="font-size: 12px; color: #6b7280;">Total Applications</div>
+          </div>
+          <div style="flex: 1; text-align: center;">
+            <div style="font-size: 24px; font-weight: bold; color: #3b82f6;" id="this-week-count">0</div>
+            <div style="font-size: 12px; color: #6b7280;">This Week</div>
+          </div>
+          <div style="flex: 1; text-align: center;">
+            <div style="font-size: 24px; font-weight: bold; color: #8b5cf6;" id="this-month-count">0</div>
+            <div style="font-size: 12px; color: #6b7280;">This Month</div>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+          <button class="btn btn-secondary" id="export-csv" style="flex: 1;">📥 Export CSV</button>
+          <button class="btn btn-secondary" id="clear-history" style="flex: 1;">🗑️ Clear History</button>
+        </div>
+
+        <div id="history-list"></div>
       </div>
     </div>
 
