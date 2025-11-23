@@ -267,13 +267,15 @@ async function displaySavedResumes() {
         name="resume-selector"
         value="${escapeHtml(resume.id)}"
         ${isDefault ? 'checked' : ''}
-        style="margin-right: 10px; cursor: pointer;"
+        style="margin-right: 10px; cursor: pointer; flex-shrink: 0;"
         data-resume-id="${escapeHtml(resume.id)}"
       >
-      <div style="flex: 1; min-width: 0;">
-        <div style="font-weight: 600; color: #111827; font-size: 13px; margin-bottom: 3px; display: flex; align-items: center; gap: 5px;">
-          ${escapeHtml(resume.fileName)}
-          ${isDefault ? '<span style="background: #10b981; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;">DEFAULT</span>' : ''}
+      <div style="flex: 1; min-width: 0; margin-right: 10px;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="font-weight: 600; color: #111827; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1;">
+            ${escapeHtml(resume.fileName)}
+          </span>
+          ${isDefault ? '<span style="background: #10b981; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: bold; white-space: nowrap; flex-shrink: 0;">DEFAULT</span>' : ''}
         </div>
         <div style="font-size: 11px; color: #6b7280;">
           ${formatFileSize(resume.fileSize)} • Uploaded ${escapeHtml(dateStr)}
@@ -282,7 +284,7 @@ async function displaySavedResumes() {
       <button
         class="delete-resume-btn"
         data-resume-id="${escapeHtml(resume.id)}"
-        style="background: #ef4444; color: white; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 12px; margin-left: 10px;"
+        style="background: #ef4444; color: white; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 12px; flex-shrink: 0;"
       >
         🗑️ Delete
       </button>
