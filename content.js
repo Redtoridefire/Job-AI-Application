@@ -977,6 +977,10 @@ async function autoFillOnLoad() {
   }
 }
 
+// Global observer variable to prevent memory leaks
+let formObserver = null;
+let formCheckTimeout = null;
+
 // Dynamic form detection - watch for forms added after page load
 chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
   const autoFillMode = data.autoFillMode || 'manual';
@@ -989,12 +993,23 @@ chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
 });
 
 function initDynamicFormDetection() {
-  let formCheckTimeout;
+  // Disconnect existing observer to prevent duplicates
+  if (formObserver) {
+    formObserver.disconnect();
+    formObserver = null;
+  }
+
+  // Clear any pending timeouts
+  if (formCheckTimeout) {
+    clearTimeout(formCheckTimeout);
+    formCheckTimeout = null;
+  }
+
   let lastFieldCount = 0;
   let fillAttempts = 0;
   const maxFillAttempts = 3; // Limit fills per page to avoid loops
 
-  const observer = new MutationObserver((mutations) => {
+  formObserver = new MutationObserver((mutations) => {
     // Debounce - only check after mutations stop for 1 second
     clearTimeout(formCheckTimeout);
     formCheckTimeout = setTimeout(async () => {
@@ -1020,13 +1035,44 @@ function initDynamicFormDetection() {
     }, 1000);
   });
 
-  observer.observe(document.body, {
+  formObserver.observe(document.body, {
     childList: true,
     subtree: true
   });
 
   console.log('Dynamic form detection enabled');
 }
+
+// Cleanup on page unload to prevent memory leaks
+window.addEventListener('beforeunload', () => {
+  if (formObserver) {
+    formObserver.disconnect();
+    formObserver = null;
+  }
+  if (formCheckTimeout) {
+    clearTimeout(formCheckTimeout);
+    formCheckTimeout = null;
+  }
+});
+
+// Cleanup on page visibility change (tab backgrounded)
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && formObserver) {
+    // Disconnect observer when tab is hidden to save resources
+    formObserver.disconnect();
+    console.log('[Smart Autofill] Observer paused (tab hidden)');
+  } else if (!document.hidden && formObserver === null) {
+    // Reinitialize when tab becomes visible again (if applicable)
+    chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
+      const autoFillMode = data.autoFillMode || 'manual';
+      const isJobSite = await isJobApplicationSite();
+      if (data.autoFillEnabled && autoFillMode === 'automatic' && isJobSite) {
+        initDynamicFormDetection();
+        console.log('[Smart Autofill] Observer resumed (tab visible)');
+      }
+    });
+  }
+});
 
 // Auto-navigation - find and click continue/next buttons
 async function checkAutoNavigation() {
