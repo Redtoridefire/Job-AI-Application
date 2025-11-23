@@ -23,16 +23,26 @@
     <!-- Profile Tab -->
     <div class="tab-content active" id="profile-tab">
       <div class="section">
-        <h3>📄 Resume Upload</h3>
+        <h3>📄 Resume Management</h3>
+
+        <!-- Upload New Resume -->
         <div class="upload-area" id="upload-area">
           <input type="file" id="resume-upload" accept=".pdf,.doc,.docx,.txt" hidden>
           <label for="resume-upload" class="upload-label">
             <span class="upload-icon">📤</span>
             <span class="upload-text">Click to upload resume</span>
-            <span class="upload-subtext">Supports PDF, DOC, DOCX, TXT</span>
+            <span class="upload-subtext">Supports PDF, DOC, DOCX, TXT (Max 500KB)</span>
           </label>
         </div>
         <div id="resume-status" class="status-message"></div>
+
+        <!-- Saved Resumes List -->
+        <div id="saved-resumes-section" style="margin-top: 15px; display: none;">
+          <h4 style="font-size: 14px; margin-bottom: 10px; color: #374151;">📋 Your Resumes</h4>
+          <div id="saved-resumes-list" style="max-height: 200px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; background: #f9fafb;">
+            <!-- Resume items will be inserted here -->
+          </div>
+        </div>
       </div>
 
       <div class="section">

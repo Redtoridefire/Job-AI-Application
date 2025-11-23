@@ -72,6 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
   checkCurrentSite();
   loadHistory();
   loadAllowedSites();
+  displaySavedResumes(); // Load saved resumes
 });
 
 // Check if current site is on the job site allowlist
@@ -119,11 +120,7 @@ tabs.forEach(tab => {
   });
 });
 
-// Resume upload
-uploadArea.addEventListener('click', () => {
-  resumeUpload.click();
-});
-
+// Resume upload - Note: No click handler needed, label handles it natively
 resumeUpload.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
@@ -135,7 +132,7 @@ resumeUpload.addEventListener('change', async (e) => {
     return;
   }
 
-  showStatus('Uploading and parsing resume...', 'info');
+  showStatus('⏳ Uploading and parsing resume...', 'info');
 
   try {
     // Check storage quota before uploading
@@ -155,12 +152,36 @@ resumeUpload.addEventListener('change', async (e) => {
     const text = await readFileAsText(file);
     const parsedData = parseResume(text);
 
-    // Save resume data with error handling
+    // Get existing resumes
+    const data = await chrome.storage.local.get(['savedResumes', 'defaultResumeId']);
+    const savedResumes = data.savedResumes || [];
+
+    // Create new resume object
+    const resumeId = Date.now().toString();
+    const newResume = {
+      id: resumeId,
+      fileName: file.name,
+      fileSize: file.size,
+      uploadDate: new Date().toISOString(),
+      text: text,
+      parsedData: parsedData
+    };
+
+    // Add to saved resumes
+    savedResumes.push(newResume);
+
+    // Set as default if it's the first resume
+    const defaultResumeId = data.defaultResumeId || resumeId;
+
+    // Save to storage with error handling
     try {
       await chrome.storage.local.set({
-        resumeText: text,
-        resumeData: parsedData,
-        resumeFileName: file.name
+        savedResumes: savedResumes,
+        defaultResumeId: defaultResumeId,
+        // Keep backward compatibility
+        resumeText: newResume.text,
+        resumeData: newResume.parsedData,
+        resumeFileName: newResume.fileName
       });
     } catch (storageError) {
       if (storageError.message && storageError.message.includes('QUOTA')) {
@@ -171,20 +192,249 @@ resumeUpload.addEventListener('change', async (e) => {
       throw storageError;
     }
 
-    // Auto-fill profile fields (using value assignment, which is safe)
-    if (parsedData.name) document.getElementById('full-name').value = parsedData.name;
-    if (parsedData.email) document.getElementById('email').value = parsedData.email;
-    if (parsedData.phone) document.getElementById('phone').value = parsedData.phone;
-    if (parsedData.linkedin) document.getElementById('linkedin').value = parsedData.linkedin;
-    if (parsedData.location) document.getElementById('location').value = parsedData.location;
+    // Auto-fill profile fields if this is the default resume
+    if (defaultResumeId === resumeId) {
+      if (parsedData.name) document.getElementById('full-name').value = parsedData.name;
+      if (parsedData.email) document.getElementById('email').value = parsedData.email;
+      if (parsedData.phone) document.getElementById('phone').value = parsedData.phone;
+      if (parsedData.linkedin) document.getElementById('linkedin').value = parsedData.linkedin;
+      if (parsedData.location) document.getElementById('location').value = parsedData.location;
+    }
 
-    showStatus(`✅ Resume uploaded: ${escapeHtml(file.name)}`, 'success');
+    // Clear file input
+    e.target.value = '';
+
+    // Show success with larger, more visible confirmation
+    showStatus(`✅ Resume saved successfully: ${escapeHtml(file.name)}`, 'success');
+
+    // Reload saved resumes display
+    displaySavedResumes();
+
+    // Show celebration notification
+    setTimeout(() => {
+      showStatus(`🎉 ${escapeHtml(file.name)} is ready to use!`, 'success');
+    }, 1500);
+
   } catch (error) {
     showStatus('❌ Error uploading resume', 'error');
     console.error('Resume upload error:', error);
     e.target.value = ''; // Reset file input
   }
 });
+
+// Display saved resumes
+async function displaySavedResumes() {
+  const data = await chrome.storage.local.get(['savedResumes', 'defaultResumeId']);
+  const savedResumes = data.savedResumes || [];
+  const defaultResumeId = data.defaultResumeId;
+
+  const section = document.getElementById('saved-resumes-section');
+  const list = document.getElementById('saved-resumes-list');
+
+  if (savedResumes.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+  list.innerHTML = '';
+
+  savedResumes.forEach((resume, index) => {
+    const isDefault = resume.id === defaultResumeId;
+    const uploadDate = new Date(resume.uploadDate);
+    const dateStr = uploadDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+
+    const item = document.createElement('div');
+    item.style.cssText = `
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: ${isDefault ? '#d1fae5' : '#ffffff'};
+      border: 2px solid ${isDefault ? '#10b981' : '#e5e7eb'};
+      border-radius: 6px;
+      transition: all 0.2s;
+      cursor: pointer;
+    `;
+
+    item.innerHTML = `
+      <input
+        type="radio"
+        name="resume-selector"
+        value="${escapeHtml(resume.id)}"
+        ${isDefault ? 'checked' : ''}
+        style="margin-right: 10px; cursor: pointer;"
+        data-resume-id="${escapeHtml(resume.id)}"
+      >
+      <div style="flex: 1; min-width: 0;">
+        <div style="font-weight: 600; color: #111827; font-size: 13px; margin-bottom: 3px; display: flex; align-items: center; gap: 5px;">
+          ${escapeHtml(resume.fileName)}
+          ${isDefault ? '<span style="background: #10b981; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;">DEFAULT</span>' : ''}
+        </div>
+        <div style="font-size: 11px; color: #6b7280;">
+          ${formatFileSize(resume.fileSize)} • Uploaded ${escapeHtml(dateStr)}
+        </div>
+      </div>
+      <button
+        class="delete-resume-btn"
+        data-resume-id="${escapeHtml(resume.id)}"
+        style="background: #ef4444; color: white; border: none; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 12px; margin-left: 10px;"
+      >
+        🗑️ Delete
+      </button>
+    `;
+
+    // Radio button click handler
+    const radio = item.querySelector('input[type="radio"]');
+    radio.addEventListener('change', async () => {
+      if (radio.checked) {
+        await selectResume(resume.id);
+      }
+    });
+
+    // Item click handler (select on click anywhere except delete button)
+    item.addEventListener('click', (e) => {
+      if (!e.target.classList.contains('delete-resume-btn')) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change'));
+      }
+    });
+
+    // Hover effect
+    item.addEventListener('mouseenter', () => {
+      if (!isDefault) {
+        item.style.background = '#f3f4f6';
+      }
+    });
+    item.addEventListener('mouseleave', () => {
+      if (!isDefault) {
+        item.style.background = '#ffffff';
+      }
+    });
+
+    list.appendChild(item);
+  });
+
+  // Add delete button handlers
+  document.querySelectorAll('.delete-resume-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const resumeId = btn.dataset.resumeId;
+      await deleteResume(resumeId);
+    });
+  });
+}
+
+// Select a resume as default
+async function selectResume(resumeId) {
+  try {
+    const data = await chrome.storage.local.get(['savedResumes']);
+    const savedResumes = data.savedResumes || [];
+
+    const selectedResume = savedResumes.find(r => r.id === resumeId);
+    if (!selectedResume) {
+      showStatus('❌ Resume not found', 'error');
+      return;
+    }
+
+    // Update default resume ID and backward compatibility fields
+    await chrome.storage.local.set({
+      defaultResumeId: resumeId,
+      resumeText: selectedResume.text,
+      resumeData: selectedResume.parsedData,
+      resumeFileName: selectedResume.fileName
+    });
+
+    // Auto-fill profile fields with selected resume
+    const parsedData = selectedResume.parsedData;
+    if (parsedData.name) document.getElementById('full-name').value = parsedData.name;
+    if (parsedData.email) document.getElementById('email').value = parsedData.email;
+    if (parsedData.phone) document.getElementById('phone').value = parsedData.phone;
+    if (parsedData.linkedin) document.getElementById('linkedin').value = parsedData.linkedin;
+    if (parsedData.location) document.getElementById('location').value = parsedData.location;
+
+    // Refresh display
+    displaySavedResumes();
+
+    // Show confirmation
+    showStatus(`✅ Now using: ${escapeHtml(selectedResume.fileName)}`, 'success');
+  } catch (error) {
+    console.error('Error selecting resume:', error);
+    showStatus('❌ Error selecting resume', 'error');
+  }
+}
+
+// Delete a resume
+async function deleteResume(resumeId) {
+  const data = await chrome.storage.local.get(['savedResumes', 'defaultResumeId']);
+  const savedResumes = data.savedResumes || [];
+  const defaultResumeId = data.defaultResumeId;
+
+  const resumeToDelete = savedResumes.find(r => r.id === resumeId);
+  if (!resumeToDelete) return;
+
+  const confirmDelete = confirm(
+    `Delete "${resumeToDelete.fileName}"?\n\nThis cannot be undone.`
+  );
+
+  if (!confirmDelete) return;
+
+  // Remove from array
+  const updatedResumes = savedResumes.filter(r => r.id !== resumeId);
+
+  // If deleting the default resume, set a new default
+  let newDefaultId = defaultResumeId;
+  if (resumeId === defaultResumeId) {
+    newDefaultId = updatedResumes.length > 0 ? updatedResumes[0].id : null;
+  }
+
+  // Update storage
+  await chrome.storage.local.set({
+    savedResumes: updatedResumes,
+    defaultResumeId: newDefaultId
+  });
+
+  // Update backward compatibility fields
+  if (newDefaultId) {
+    const newDefault = updatedResumes.find(r => r.id === newDefaultId);
+    await chrome.storage.local.set({
+      resumeText: newDefault.text,
+      resumeData: newDefault.parsedData,
+      resumeFileName: newDefault.fileName
+    });
+
+    // Update profile fields
+    const parsedData = newDefault.parsedData;
+    if (parsedData.name) document.getElementById('full-name').value = parsedData.name;
+    if (parsedData.email) document.getElementById('email').value = parsedData.email;
+    if (parsedData.phone) document.getElementById('phone').value = parsedData.phone;
+    if (parsedData.linkedin) document.getElementById('linkedin').value = parsedData.linkedin;
+    if (parsedData.location) document.getElementById('location').value = parsedData.location;
+  } else {
+    // No resumes left, clear fields
+    await chrome.storage.local.set({
+      resumeText: '',
+      resumeData: null,
+      resumeFileName: ''
+    });
+  }
+
+  // Refresh display
+  displaySavedResumes();
+
+  showStatus(`🗑️ Deleted: ${escapeHtml(resumeToDelete.fileName)}`, 'info');
+}
+
+// Format file size helper
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
 
 // Read file as text
 function readFileAsText(file) {
