@@ -132,6 +132,30 @@
         </div>
       </div>
 
+      <div class="section">
+        <h3>🌐 Allowed Job Sites</h3>
+        <p class="info-text">Manage which sites the extension can auto-fill (only applies in Automatic mode)</p>
+
+        <div style="margin-bottom: 15px;">
+          <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+            <input type="text" id="custom-site-input" placeholder="Enter domain (e.g., company.com)" style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            <button class="btn btn-secondary" id="add-custom-site" style="white-space: nowrap;">➕ Add Site</button>
+          </div>
+          <p style="font-size: 11px; color: #666; margin-top: 5px;">
+            Add custom domains or URL patterns (e.g., "mycompany.com" or "/careers")
+          </p>
+        </div>
+
+        <div style="max-height: 200px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; background: #f9fafb;">
+          <div id="allowed-sites-list"></div>
+        </div>
+
+        <div style="margin-top: 10px; display: flex; gap: 10px;">
+          <button class="btn btn-secondary" id="reset-default-sites" style="flex: 1;">🔄 Reset to Defaults</button>
+          <button class="btn btn-secondary" id="toggle-all-sites" style="flex: 1;">👁️ Show All</button>
+        </div>
+      </div>
+
       <button class="btn btn-primary" id="save-settings">💾 Save Settings</button>
     </div>
 

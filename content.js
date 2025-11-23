@@ -1,7 +1,7 @@
 // Content script - runs on all pages to detect and fill forms
 
-// Allowlist of job application sites
-const JOB_SITE_PATTERNS = [
+// Default allowlist of job application sites
+const DEFAULT_JOB_SITE_PATTERNS = [
   // Major ATS (Applicant Tracking Systems)
   'workday.com',
   'myworkdayjobs.com',
@@ -51,11 +51,22 @@ const JOB_SITE_PATTERNS = [
 ];
 
 // Check if current page is a job application site
-function isJobApplicationSite() {
+async function isJobApplicationSite() {
   const url = window.location.href.toLowerCase();
   const hostname = window.location.hostname.toLowerCase();
 
-  return JOB_SITE_PATTERNS.some(pattern => {
+  // Get user's custom allowed sites
+  const data = await chrome.storage.local.get(['allowedSites', 'disabledDefaultSites']);
+  const customSites = data.allowedSites || [];
+  const disabledSites = data.disabledDefaultSites || [];
+
+  // Combine default patterns (minus disabled ones) with custom sites
+  const enabledDefaults = DEFAULT_JOB_SITE_PATTERNS.filter(
+    pattern => !disabledSites.includes(pattern)
+  );
+  const allPatterns = [...enabledDefaults, ...customSites];
+
+  return allPatterns.some(pattern => {
     if (pattern.startsWith('/')) {
       // Path-based pattern
       return url.includes(pattern);
@@ -64,6 +75,11 @@ function isJobApplicationSite() {
       return hostname.includes(pattern);
     }
   });
+}
+
+// Export default patterns for use in popup
+if (typeof window !== 'undefined') {
+  window.DEFAULT_JOB_SITE_PATTERNS = DEFAULT_JOB_SITE_PATTERNS;
 }
 
 // Listen for messages from popup
@@ -79,11 +95,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'checkSite') {
     // Check if current site is on allowlist
-    sendResponse({
-      isJobSite: isJobApplicationSite(),
-      url: window.location.href,
-      hostname: window.location.hostname
+    isJobApplicationSite().then(isJobSite => {
+      sendResponse({
+        isJobSite,
+        url: window.location.href,
+        hostname: window.location.hostname
+      });
     });
+    return true; // Required for async response
+  }
+
+  if (request.action === 'getDefaultSites') {
+    // Return default site patterns for popup
+    sendResponse({ defaultSites: DEFAULT_JOB_SITE_PATTERNS });
     return true;
   }
 });
@@ -706,10 +730,10 @@ function highlightField(element) {
 }
 
 // Auto-fill on page load (if enabled)
-chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], (data) => {
+chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
   // Check if we should auto-fill
   const autoFillMode = data.autoFillMode || 'manual'; // Default to manual
-  const isJobSite = isJobApplicationSite();
+  const isJobSite = await isJobApplicationSite();
 
   console.log(`[Smart Autofill] Mode: ${autoFillMode}, Job site: ${isJobSite}, URL: ${window.location.href}`);
 
@@ -749,9 +773,9 @@ async function autoFillOnLoad() {
 }
 
 // Dynamic form detection - watch for forms added after page load
-chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], (data) => {
+chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
   const autoFillMode = data.autoFillMode || 'manual';
-  const isJobSite = isJobApplicationSite();
+  const isJobSite = await isJobApplicationSite();
 
   // Only enable dynamic detection if in automatic mode and on job site
   if (data.autoFillEnabled && autoFillMode === 'automatic' && isJobSite) {
