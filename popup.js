@@ -20,6 +20,49 @@ const allowedSitesList = document.getElementById('allowed-sites-list');
 const resetDefaultSitesBtn = document.getElementById('reset-default-sites');
 const toggleAllSitesBtn = document.getElementById('toggle-all-sites');
 
+// ===== SECURITY UTILITIES =====
+
+// HTML escape function to prevent XSS
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// CSV cell sanitization to prevent formula injection
+function sanitizeCsvCell(value) {
+  if (!value) return '""';
+  const strValue = String(value);
+
+  // Prepend single quote if starts with dangerous characters
+  if (/^[=+\-@\t\r]/.test(strValue)) {
+    return `"'${strValue.replace(/"/g, '""')}"`;
+  }
+  return `"${strValue.replace(/"/g, '""')}"`;
+}
+
+// Check storage quota and warn if getting full
+async function checkStorageQuota() {
+  try {
+    const usage = await chrome.storage.local.getBytesInUse(null);
+    const limit = 10485760; // 10MB limit for chrome.storage.local
+    const percentage = (usage / limit) * 100;
+
+    return {
+      usage,
+      limit,
+      percentage,
+      remaining: limit - usage
+    };
+  } catch (error) {
+    console.error('Error checking storage quota:', error);
+    return { usage: 0, limit: 10485760, percentage: 0, remaining: 10485760 };
+  }
+}
+
+// ===== END SECURITY UTILITIES =====
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   loadProfile();
@@ -85,30 +128,61 @@ resumeUpload.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
+  // Validate file size (limit to 500KB)
+  if (file.size > 500000) {
+    showStatus('❌ Resume too large. Please use a smaller file (<500KB)', 'error');
+    e.target.value = ''; // Reset file input
+    return;
+  }
+
   showStatus('Uploading and parsing resume...', 'info');
 
   try {
+    // Check storage quota before uploading
+    const quota = await checkStorageQuota();
+    if (quota.percentage > 80) {
+      const continueUpload = confirm(
+        `Storage is ${quota.percentage.toFixed(0)}% full. ` +
+        `You have ${(quota.remaining / 1024).toFixed(0)}KB remaining. Continue?`
+      );
+      if (!continueUpload) {
+        e.target.value = ''; // Reset file input
+        showStatus('Upload cancelled', 'info');
+        return;
+      }
+    }
+
     const text = await readFileAsText(file);
     const parsedData = parseResume(text);
-    
-    // Save resume data
-    await chrome.storage.local.set({
-      resumeText: text,
-      resumeData: parsedData,
-      resumeFileName: file.name
-    });
 
-    // Auto-fill profile fields
+    // Save resume data with error handling
+    try {
+      await chrome.storage.local.set({
+        resumeText: text,
+        resumeData: parsedData,
+        resumeFileName: file.name
+      });
+    } catch (storageError) {
+      if (storageError.message && storageError.message.includes('QUOTA')) {
+        showStatus('❌ Storage full. Please clear some data and try again.', 'error');
+        e.target.value = ''; // Reset file input
+        return;
+      }
+      throw storageError;
+    }
+
+    // Auto-fill profile fields (using value assignment, which is safe)
     if (parsedData.name) document.getElementById('full-name').value = parsedData.name;
     if (parsedData.email) document.getElementById('email').value = parsedData.email;
     if (parsedData.phone) document.getElementById('phone').value = parsedData.phone;
     if (parsedData.linkedin) document.getElementById('linkedin').value = parsedData.linkedin;
     if (parsedData.location) document.getElementById('location').value = parsedData.location;
 
-    showStatus(`✅ Resume uploaded: ${file.name}`, 'success');
+    showStatus(`✅ Resume uploaded: ${escapeHtml(file.name)}`, 'success');
   } catch (error) {
     showStatus('❌ Error uploading resume', 'error');
-    console.error(error);
+    console.error('Resume upload error:', error);
+    e.target.value = ''; // Reset file input
   }
 });
 
@@ -419,9 +493,10 @@ async function loadLearnedData() {
   entries.forEach(([question, answer]) => {
     const item = document.createElement('div');
     item.className = 'learned-item';
+    // Use escapeHtml to prevent XSS attacks
     item.innerHTML = `
-      <div class="learned-question">${truncate(question, 60)}</div>
-      <div class="learned-answer">Answer: ${truncate(answer, 80)}</div>
+      <div class="learned-question">${escapeHtml(truncate(question, 60))}</div>
+      <div class="learned-answer">Answer: ${escapeHtml(truncate(answer, 80))}</div>
     `;
     learnedDataList.appendChild(item);
   });
@@ -526,14 +601,15 @@ function displayHistoryList(history) {
       transition: all 0.2s;
     `;
 
+    // Use escapeHtml to prevent XSS attacks from malicious job listings
     item.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 5px;">
-        <div style="font-weight: 600; color: #111827; flex: 1;">${truncate(app.jobTitle, 40)}</div>
-        <button class="delete-app-btn" data-id="${app.id}" style="background: none; border: none; color: #ef4444; cursor: pointer; padding: 0 5px; font-size: 16px;">×</button>
+        <div style="font-weight: 600; color: #111827; flex: 1;">${escapeHtml(truncate(app.jobTitle, 40))}</div>
+        <button class="delete-app-btn" data-id="${escapeHtml(app.id)}" style="background: none; border: none; color: #ef4444; cursor: pointer; padding: 0 5px; font-size: 16px;">×</button>
       </div>
-      <div style="font-size: 13px; color: #6b7280; margin-bottom: 3px;">🏢 ${truncate(app.company, 35)}</div>
-      <div style="font-size: 12px; color: #9ca3af;">📅 ${dateStr} at ${timeStr}</div>
-      <div style="font-size: 11px; color: #9ca3af; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔗 ${app.hostname}</div>
+      <div style="font-size: 13px; color: #6b7280; margin-bottom: 3px;">🏢 ${escapeHtml(truncate(app.company, 35))}</div>
+      <div style="font-size: 12px; color: #9ca3af;">📅 ${escapeHtml(dateStr)} at ${escapeHtml(timeStr)}</div>
+      <div style="font-size: 11px; color: #9ca3af; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">🔗 ${escapeHtml(app.hostname)}</div>
     `;
 
     // Click to open URL
@@ -585,15 +661,15 @@ exportCsvBtn.addEventListener('click', async () => {
     return;
   }
 
-  // Create CSV content
+  // Create CSV content with formula injection protection
   const headers = ['Date', 'Time', 'Job Title', 'Company', 'URL'];
   const rows = history.map(app => {
     const date = new Date(app.date);
     return [
       date.toLocaleDateString('en-US'),
       date.toLocaleTimeString('en-US'),
-      `"${app.jobTitle.replace(/"/g, '""')}"`,
-      `"${app.company.replace(/"/g, '""')}"`,
+      sanitizeCsvCell(app.jobTitle),  // Prevent formula injection
+      sanitizeCsvCell(app.company),   // Prevent formula injection
       app.url
     ];
   });
@@ -755,9 +831,42 @@ addCustomSiteBtn.addEventListener('click', async () => {
     return;
   }
 
-  // Basic validation
+  // Enhanced validation to prevent XSS and injection attacks
   if (site.includes(' ')) {
     alert('Site pattern cannot contain spaces');
+    return;
+  }
+
+  // Prevent dangerous characters and patterns
+  if (/<|>|script|javascript:|data:|;|\||&|`|'|"/i.test(site)) {
+    alert('Invalid characters in site pattern. Please use only letters, numbers, dots, dashes, and slashes.');
+    return;
+  }
+
+  // Validate domain format
+  if (!site.startsWith('/')) {
+    // Should look like a domain (basic check)
+    if (!/^[a-z0-9.-]+$/i.test(site)) {
+      alert('Invalid domain format. Use only letters, numbers, dots, and dashes.\nExample: workday.com or mycompany.jobs');
+      return;
+    }
+
+    // Prevent obviously invalid patterns
+    if (site.startsWith('.') || site.endsWith('.') || site.includes('..')) {
+      alert('Invalid domain format. Dots cannot be at the start/end or consecutive.');
+      return;
+    }
+  } else {
+    // Path-based pattern
+    if (!/^\/[a-z0-9\/-]*$/i.test(site)) {
+      alert('Invalid path format. Use only letters, numbers, slashes, and dashes.\nExample: /careers or /jobs');
+      return;
+    }
+  }
+
+  // Limit length to prevent abuse
+  if (site.length > 100) {
+    alert('Site pattern too long (max 100 characters)');
     return;
   }
 
@@ -767,6 +876,12 @@ addCustomSiteBtn.addEventListener('click', async () => {
   // Check if already exists
   if (customSites.includes(site) || defaultSitePatterns.includes(site)) {
     alert('This site is already in the list');
+    return;
+  }
+
+  // Limit total custom sites to prevent abuse
+  if (customSites.length >= 50) {
+    alert('Maximum custom sites reached (50). Please remove some before adding more.');
     return;
   }
 
