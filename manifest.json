@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Smart Job Application Autofill",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "AI-powered job application autofill assistant that learns from your choices",
   "permissions": [
     "storage",

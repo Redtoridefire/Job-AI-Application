@@ -85,9 +85,10 @@ if (typeof window !== 'undefined') {
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'fillForm') {
-    // Manual trigger - always fill regardless of allowlist or mode
-    console.log('Manual fill triggered from popup');
-    fillCurrentForm().then((result) => {
+    // Manual trigger - always fill regardless of settings
+    console.log('[Smart Autofill] Manual fill triggered from popup');
+    fillCurrentForm(true).then((result) => { // Pass true for manual mode
+      console.log('[Smart Autofill] Manual fill result:', result);
       sendResponse(result);
     });
     return true; // Required for async response
@@ -116,8 +117,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 const filledFields = new WeakSet();
 
 // Main form filling function
-async function fillCurrentForm() {
+async function fillCurrentForm(isManualTrigger = false) {
   try {
+    console.log('[Smart Autofill] Starting form fill, manual:', isManualTrigger);
+
     // Get user data and settings from storage
     const data = await chrome.storage.local.get([
       'fullName', 'email', 'phone', 'linkedin', 'location',
@@ -125,7 +128,19 @@ async function fillCurrentForm() {
       'autoFillEnabled', 'learnMode', 'smartMode', 'workAuth'
     ]);
 
-    if (!data.autoFillEnabled) {
+    console.log('[Smart Autofill] User data loaded:', {
+      hasFullName: !!data.fullName,
+      hasEmail: !!data.email,
+      hasPhone: !!data.phone,
+      hasLinkedin: !!data.linkedin,
+      hasLocation: !!data.location,
+      hasResumeData: !!data.resumeData,
+      learnedCount: Object.keys(data.learnedResponses || {}).length
+    });
+
+    // Only check autoFillEnabled for automatic fills, not manual triggers
+    if (!isManualTrigger && !data.autoFillEnabled) {
+      console.log('[Smart Autofill] Auto-fill is disabled (automatic mode)');
       return { success: false, message: 'Auto-fill is disabled' };
     }
 
@@ -134,6 +149,11 @@ async function fillCurrentForm() {
 
     // Find all form fields
     const fields = findFormFields();
+    console.log(`[Smart Autofill] Found ${fields.length} form fields`);
+
+    if (fields.length === 0) {
+      return { success: false, message: 'No form fields found on this page' };
+    }
 
     let filledCount = 0;
 
@@ -157,16 +177,23 @@ async function fillCurrentForm() {
       }
     }
 
-    console.log(`Auto-filled ${filledCount} fields`);
+    console.log(`[Smart Autofill] ✅ Filled ${filledCount} out of ${fields.length} fields`);
 
     // Track this application if we filled any fields
     if (filledCount > 0) {
       await trackApplication();
     }
 
-    return { success: true, fieldsF: filledCount };
+    if (filledCount === 0) {
+      return {
+        success: false,
+        message: `Found ${fields.length} fields but could not fill any. Make sure your profile data is saved.`
+      };
+    }
+
+    return { success: true, fieldsFilled: filledCount, fieldsTotal: fields.length };
   } catch (error) {
-    console.error('Error filling form:', error);
+    console.error('[Smart Autofill] Error filling form:', error);
     return { success: false, message: error.message };
   }
 }
@@ -497,25 +524,14 @@ async function fillField(field, userData, learnedResponses) {
   const element = field.element;
   const fieldInfo = getFieldInfo(element);
 
-  // Check if we've learned a response for this field
-  const learnedValue = findLearnedResponse(fieldInfo, learnedResponses);
-  if (learnedValue) {
-    const filled = setFieldValue(field, learnedValue);
+  // Log field info for debugging
+  const fieldName = fieldInfo.label || fieldInfo.name || fieldInfo.placeholder || fieldInfo.id || 'unknown';
+  console.log(`[Smart Autofill] Checking field: "${fieldName}" (type: ${field.type})`);
 
-    // Validate filled value against resume
-    if (filled && userData.resumeData) {
-      const validation = validateFieldAgainstResume(fieldInfo, learnedValue, userData.resumeData);
-      if (!validation.isValid) {
-        addValidationWarning(element, validation.message);
-      }
-    }
-
-    return filled;
-  }
-
-  // Use smart matching to fill the field
+  // PRIORITY 1: Try smart matching first (uses profile data: name, email, phone, etc.)
   const value = smartMatch(fieldInfo, userData);
   if (value) {
+    console.log(`[Smart Autofill] ✓ Filling "${fieldName}" with profile data: "${value}"`);
     const filled = setFieldValue(field, value);
 
     // Validate filled value against resume
@@ -529,6 +545,24 @@ async function fillField(field, userData, learnedResponses) {
     return filled;
   }
 
+  // PRIORITY 2: Check if we've learned a response for this field (custom/unique fields)
+  const learnedValue = findLearnedResponse(fieldInfo, learnedResponses);
+  if (learnedValue) {
+    console.log(`[Smart Autofill] ✓ Filling "${fieldName}" with learned data: "${learnedValue}"`);
+    const filled = setFieldValue(field, learnedValue);
+
+    // Validate filled value against resume
+    if (filled && userData.resumeData) {
+      const validation = validateFieldAgainstResume(fieldInfo, learnedValue, userData.resumeData);
+      if (!validation.isValid) {
+        addValidationWarning(element, validation.message);
+      }
+    }
+
+    return filled;
+  }
+
+  console.log(`[Smart Autofill] ✗ No data found for "${fieldName}"`);
   return false;
 }
 
