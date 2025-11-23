@@ -134,10 +134,97 @@ async function fillCurrentForm() {
     }
 
     console.log(`Auto-filled ${filledCount} fields`);
+
+    // Track this application if we filled any fields
+    if (filledCount > 0) {
+      await trackApplication();
+    }
+
     return { success: true, fieldsF: filledCount };
   } catch (error) {
     console.error('Error filling form:', error);
     return { success: false, message: error.message };
+  }
+}
+
+// Track application to history
+async function trackApplication() {
+  try {
+    const url = window.location.href;
+    const hostname = window.location.hostname;
+    const title = document.title;
+
+    // Try to extract job title and company from page
+    let jobTitle = '';
+    let company = '';
+
+    // Common patterns for job titles
+    const jobTitlePatterns = [
+      document.querySelector('h1'),
+      document.querySelector('[class*="job-title"]'),
+      document.querySelector('[class*="position"]'),
+      document.querySelector('[data-automation="job-title"]')
+    ];
+
+    for (const element of jobTitlePatterns) {
+      if (element && element.textContent.trim()) {
+        jobTitle = element.textContent.trim();
+        break;
+      }
+    }
+
+    // Common patterns for company names
+    const companyPatterns = [
+      document.querySelector('[class*="company"]'),
+      document.querySelector('[class*="employer"]'),
+      document.querySelector('[data-automation="company-name"]')
+    ];
+
+    for (const element of companyPatterns) {
+      if (element && element.textContent.trim()) {
+        company = element.textContent.trim();
+        break;
+      }
+    }
+
+    // Fallback to hostname if no company found
+    if (!company) {
+      company = hostname.replace('www.', '').split('.')[0];
+      company = company.charAt(0).toUpperCase() + company.slice(1);
+    }
+
+    // Fallback to page title if no job title found
+    if (!jobTitle) {
+      jobTitle = title.split('|')[0].split('-')[0].trim();
+    }
+
+    const application = {
+      id: Date.now().toString(),
+      jobTitle,
+      company,
+      url,
+      hostname,
+      date: new Date().toISOString(),
+      timestamp: Date.now()
+    };
+
+    // Save to storage
+    const data = await chrome.storage.local.get(['applicationHistory']);
+    const history = data.applicationHistory || [];
+
+    // Check if this URL was already tracked in the last hour (avoid duplicates)
+    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    const alreadyTracked = history.some(app =>
+      app.url === url && app.timestamp > oneHourAgo
+    );
+
+    if (!alreadyTracked) {
+      history.unshift(application); // Add to beginning
+      await chrome.storage.local.set({ applicationHistory: history });
+      console.log('[Smart Autofill] Application tracked:', jobTitle, 'at', company);
+    }
+  } catch (error) {
+    console.error('Error tracking application:', error);
   }
 }
 
