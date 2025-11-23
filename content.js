@@ -1,12 +1,90 @@
 // Content script - runs on all pages to detect and fill forms
 
+// Allowlist of job application sites
+const JOB_SITE_PATTERNS = [
+  // Major ATS (Applicant Tracking Systems)
+  'workday.com',
+  'myworkdayjobs.com',
+  'greenhouse.io',
+  'greenhouse.com',
+  'lever.co',
+  'icims.com',
+  'smartrecruiters.com',
+  'taleo.net',
+  'successfactors.com',
+  'ultipro.com',
+  'jobvite.com',
+  'bamboohr.com',
+  'workable.com',
+  'breezy.hr',
+  'recruitee.com',
+  'ashbyhq.com',
+  'applytojob.com',
+
+  // Job boards
+  'indeed.com',
+  'linkedin.com',
+  'monster.com',
+  'glassdoor.com',
+  'dice.com',
+  'careerbuilder.com',
+  'ziprecruiter.com',
+  'simplyhired.com',
+  'snagajob.com',
+  'craigslist.org',
+
+  // Tech-specific
+  'angel.co',
+  'wellfound.com',
+  'stackoverflow.com/jobs',
+  'hired.com',
+  'otta.com',
+  'cord.co',
+
+  // Company career pages (common patterns)
+  '/careers',
+  '/jobs',
+  '/apply',
+  '/application',
+  '/positions',
+  '/opportunities'
+];
+
+// Check if current page is a job application site
+function isJobApplicationSite() {
+  const url = window.location.href.toLowerCase();
+  const hostname = window.location.hostname.toLowerCase();
+
+  return JOB_SITE_PATTERNS.some(pattern => {
+    if (pattern.startsWith('/')) {
+      // Path-based pattern
+      return url.includes(pattern);
+    } else {
+      // Domain-based pattern
+      return hostname.includes(pattern);
+    }
+  });
+}
+
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'fillForm') {
+    // Manual trigger - always fill regardless of allowlist or mode
+    console.log('Manual fill triggered from popup');
     fillCurrentForm().then((result) => {
       sendResponse(result);
     });
     return true; // Required for async response
+  }
+
+  if (request.action === 'checkSite') {
+    // Check if current site is on allowlist
+    sendResponse({
+      isJobSite: isJobApplicationSite(),
+      url: window.location.href,
+      hostname: window.location.hostname
+    });
+    return true;
   }
 });
 
@@ -541,8 +619,19 @@ function highlightField(element) {
 }
 
 // Auto-fill on page load (if enabled)
-chrome.storage.local.get(['autoFillEnabled'], (data) => {
-  if (data.autoFillEnabled) {
+chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], (data) => {
+  // Check if we should auto-fill
+  const autoFillMode = data.autoFillMode || 'manual'; // Default to manual
+  const isJobSite = isJobApplicationSite();
+
+  console.log(`[Smart Autofill] Mode: ${autoFillMode}, Job site: ${isJobSite}, URL: ${window.location.href}`);
+
+  // Only auto-fill if:
+  // 1. Auto-fill is enabled
+  // 2. Mode is set to 'automatic'
+  // 3. Current site is on the allowlist
+  if (data.autoFillEnabled && autoFillMode === 'automatic' && isJobSite) {
+    console.log('[Smart Autofill] Automatic mode enabled on job site - will auto-fill');
     // Wait for page to fully load
     if (document.readyState === 'complete') {
       setTimeout(() => autoFillOnLoad(), 2000); // Wait 2s for dynamic content
@@ -551,6 +640,10 @@ chrome.storage.local.get(['autoFillEnabled'], (data) => {
         setTimeout(() => autoFillOnLoad(), 2000);
       });
     }
+  } else if (data.autoFillEnabled && autoFillMode === 'manual') {
+    console.log('[Smart Autofill] Manual mode - waiting for button click');
+  } else if (data.autoFillEnabled && !isJobSite) {
+    console.log('[Smart Autofill] Not a job application site - skipping auto-fill');
   }
 });
 
@@ -560,7 +653,7 @@ async function autoFillOnLoad() {
   const inputs = document.querySelectorAll('input, textarea, select');
 
   if (forms.length > 0 || inputs.length > 0) {
-    console.log(`Found ${forms.length} form(s) and ${inputs.length} field(s) - auto-filling...`);
+    console.log(`[Smart Autofill] Found ${forms.length} form(s) and ${inputs.length} field(s) - auto-filling...`);
     await fillCurrentForm();
 
     // After filling, check if we should auto-navigate
@@ -569,8 +662,12 @@ async function autoFillOnLoad() {
 }
 
 // Dynamic form detection - watch for forms added after page load
-chrome.storage.local.get(['autoFillEnabled'], (data) => {
-  if (data.autoFillEnabled) {
+chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], (data) => {
+  const autoFillMode = data.autoFillMode || 'manual';
+  const isJobSite = isJobApplicationSite();
+
+  // Only enable dynamic detection if in automatic mode and on job site
+  if (data.autoFillEnabled && autoFillMode === 'automatic' && isJobSite) {
     initDynamicFormDetection();
   }
 });

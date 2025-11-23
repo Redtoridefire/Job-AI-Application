@@ -18,7 +18,40 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   loadLearnedData();
   loadStats();
+  checkCurrentSite();
 });
+
+// Check if current site is on the job site allowlist
+async function checkCurrentSite() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    chrome.tabs.sendMessage(tab.id, { action: 'checkSite' }, (response) => {
+      if (chrome.runtime.lastError) {
+        // Content script might not be loaded yet
+        console.log('Could not check site:', chrome.runtime.lastError.message);
+        return;
+      }
+
+      const siteStatus = document.getElementById('site-status');
+      const siteStatusText = document.getElementById('site-status-text');
+
+      if (response && response.isJobSite) {
+        siteStatus.style.display = 'block';
+        siteStatus.style.background = '#d1fae5';
+        siteStatus.style.color = '#065f46';
+        siteStatusText.textContent = '✅ Job application site detected - Auto-fill available';
+      } else {
+        siteStatus.style.display = 'block';
+        siteStatus.style.background = '#fee2e2';
+        siteStatus.style.color = '#991b1b';
+        siteStatusText.textContent = '⚠️ Not a recognized job site - Manual fill only';
+      }
+    });
+  } catch (error) {
+    console.error('Error checking site:', error);
+  }
+}
 
 // Tab switching
 tabs.forEach(tab => {
@@ -170,10 +203,11 @@ saveProfileBtn.addEventListener('click', async () => {
 // Load settings
 async function loadSettings() {
   const data = await chrome.storage.local.get([
-    'autoFillEnabled', 'learnMode', 'smartMode', 'autoNavigate', 'fillSpeed', 'workAuth'
+    'autoFillEnabled', 'autoFillMode', 'learnMode', 'smartMode', 'autoNavigate', 'fillSpeed', 'workAuth'
   ]);
 
   document.getElementById('auto-fill-enabled').checked = data.autoFillEnabled !== false;
+  document.getElementById('auto-fill-mode').value = data.autoFillMode || 'manual'; // Default to manual
   document.getElementById('learn-mode').checked = data.learnMode !== false;
   document.getElementById('smart-mode').checked = data.smartMode !== false;
   document.getElementById('auto-navigate').checked = data.autoNavigate === true; // Default off
@@ -186,6 +220,7 @@ async function loadSettings() {
 saveSettingsBtn.addEventListener('click', async () => {
   const settings = {
     autoFillEnabled: document.getElementById('auto-fill-enabled').checked,
+    autoFillMode: document.getElementById('auto-fill-mode').value,
     learnMode: document.getElementById('learn-mode').checked,
     smartMode: document.getElementById('smart-mode').checked,
     autoNavigate: document.getElementById('auto-navigate').checked,
@@ -200,6 +235,11 @@ saveSettingsBtn.addEventListener('click', async () => {
   setTimeout(() => {
     saveSettingsBtn.textContent = originalText;
   }, 2000);
+
+  // Show message if automatic mode selected
+  if (settings.autoFillMode === 'automatic') {
+    alert('Automatic mode enabled! The extension will now auto-fill forms on job application sites when pages load. Refresh any open job application tabs to activate.');
+  }
 });
 
 // Update speed value display
