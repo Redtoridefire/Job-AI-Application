@@ -1,7 +1,7 @@
 // Content script - runs on all pages to detect and fill forms
 
-// Allowlist of job application sites
-const JOB_SITE_PATTERNS = [
+// Default allowlist of job application sites
+const DEFAULT_JOB_SITE_PATTERNS = [
   // Major ATS (Applicant Tracking Systems)
   'workday.com',
   'myworkdayjobs.com',
@@ -51,11 +51,22 @@ const JOB_SITE_PATTERNS = [
 ];
 
 // Check if current page is a job application site
-function isJobApplicationSite() {
+async function isJobApplicationSite() {
   const url = window.location.href.toLowerCase();
   const hostname = window.location.hostname.toLowerCase();
 
-  return JOB_SITE_PATTERNS.some(pattern => {
+  // Get user's custom allowed sites
+  const data = await chrome.storage.local.get(['allowedSites', 'disabledDefaultSites']);
+  const customSites = data.allowedSites || [];
+  const disabledSites = data.disabledDefaultSites || [];
+
+  // Combine default patterns (minus disabled ones) with custom sites
+  const enabledDefaults = DEFAULT_JOB_SITE_PATTERNS.filter(
+    pattern => !disabledSites.includes(pattern)
+  );
+  const allPatterns = [...enabledDefaults, ...customSites];
+
+  return allPatterns.some(pattern => {
     if (pattern.startsWith('/')) {
       // Path-based pattern
       return url.includes(pattern);
@@ -64,6 +75,11 @@ function isJobApplicationSite() {
       return hostname.includes(pattern);
     }
   });
+}
+
+// Export default patterns for use in popup
+if (typeof window !== 'undefined') {
+  window.DEFAULT_JOB_SITE_PATTERNS = DEFAULT_JOB_SITE_PATTERNS;
 }
 
 // Listen for messages from popup
@@ -79,11 +95,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'checkSite') {
     // Check if current site is on allowlist
-    sendResponse({
-      isJobSite: isJobApplicationSite(),
-      url: window.location.href,
-      hostname: window.location.hostname
+    isJobApplicationSite().then(isJobSite => {
+      sendResponse({
+        isJobSite,
+        url: window.location.href,
+        hostname: window.location.hostname
+      });
     });
+    return true; // Required for async response
+  }
+
+  if (request.action === 'getDefaultSites') {
+    // Return default site patterns for popup
+    sendResponse({ defaultSites: DEFAULT_JOB_SITE_PATTERNS });
     return true;
   }
 });
@@ -283,21 +307,226 @@ function isVisible(element) {
          window.getComputedStyle(element).display !== 'none';
 }
 
+// Validation helper: Get work experience from resume data
+function getResumeWorkExperience(resumeData, index = 0) {
+  if (!resumeData || !resumeData.experience || !resumeData.experience[index]) {
+    return null;
+  }
+  return resumeData.experience[index];
+}
+
+// Validation helper: Compare two strings with fuzzy matching
+function fuzzyCompare(str1, str2) {
+  if (!str1 || !str2) return false;
+
+  const s1 = str1.toLowerCase().trim();
+  const s2 = str2.toLowerCase().trim();
+
+  // Exact match
+  if (s1 === s2) return true;
+
+  // Contains match
+  if (s1.includes(s2) || s2.includes(s1)) return true;
+
+  // Remove common separators and compare
+  const clean1 = s1.replace(/[,.\-_\s]+/g, '');
+  const clean2 = s2.replace(/[,.\-_\s]+/g, '');
+  if (clean1 === clean2) return true;
+
+  return false;
+}
+
+// Validation helper: Compare dates
+function compareDates(filledDate, resumeDate) {
+  if (!filledDate || !resumeDate) return true; // Can't validate without both
+
+  const filled = filledDate.toString().toLowerCase().trim();
+  const resume = resumeDate.toString().toLowerCase().trim();
+
+  // Exact match
+  if (filled === resume) return true;
+
+  // Try to extract year and month for comparison
+  const filledYear = filled.match(/\d{4}/);
+  const resumeYear = resume.match(/\d{4}/);
+
+  if (filledYear && resumeYear && filledYear[0] === resumeYear[0]) {
+    // Years match - check month if present
+    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const filledMonth = months.findIndex(m => filled.includes(m));
+    const resumeMonth = months.findIndex(m => resume.includes(m));
+
+    if (filledMonth === -1 || resumeMonth === -1) {
+      // Can't determine month, year match is good enough
+      return true;
+    }
+
+    return filledMonth === resumeMonth;
+  }
+
+  return false;
+}
+
+// Validation helper: Validate field value against resume
+function validateFieldAgainstResume(fieldInfo, value, resumeData) {
+  const latestJob = getResumeWorkExperience(resumeData, 0);
+  if (!latestJob) {
+    // No resume data to validate against
+    return { isValid: true, message: '' };
+  }
+
+  const search = fieldInfo.searchString;
+
+  // Detect if this is a work experience field
+  const isWorkExperienceField = matchesAny(search, [
+    'current job', 'current position', 'current employer', 'current company',
+    'most recent', 'latest job', 'last job', 'previous job', 'previous employer',
+    'work experience 1', 'experience 1', 'employer 1', 'job 1', 'position 1',
+    'current title', 'recent position'
+  ]);
+
+  if (!isWorkExperienceField) {
+    // Check specific field types
+
+    // Job Title validation
+    if (matchesAny(search, ['job title', 'position title', 'title', 'role']) &&
+        !matchesAny(search, ['desired', 'seeking', 'looking for'])) {
+      if (latestJob.title && !fuzzyCompare(value, latestJob.title)) {
+        return {
+          isValid: false,
+          message: `Job title mismatch: filled "${value}" but resume shows "${latestJob.title}"`
+        };
+      }
+    }
+
+    // Company validation
+    if (matchesAny(search, ['company', 'employer', 'organization']) &&
+        !matchesAny(search, ['desired', 'dream', 'target'])) {
+      if (latestJob.company && !fuzzyCompare(value, latestJob.company)) {
+        return {
+          isValid: false,
+          message: `Company mismatch: filled "${value}" but resume shows "${latestJob.company}"`
+        };
+      }
+    }
+
+    // Location validation
+    if (matchesAny(search, ['work location', 'job location', 'office location']) ||
+        (matchesAny(search, ['location', 'city', 'state']) &&
+         matchesAny(search, ['work', 'job', 'employer', 'office']))) {
+      if (latestJob.location && !fuzzyCompare(value, latestJob.location)) {
+        return {
+          isValid: false,
+          message: `Location mismatch: filled "${value}" but resume shows "${latestJob.location}"`
+        };
+      }
+    }
+
+    // Start date validation
+    if (matchesAny(search, ['start date', 'started', 'from date', 'begin date']) &&
+        matchesAny(search, ['work', 'job', 'employment', 'position'])) {
+      if (latestJob.startDate && !compareDates(value, latestJob.startDate)) {
+        return {
+          isValid: false,
+          message: `Start date mismatch: filled "${value}" but resume shows "${latestJob.startDate}"`
+        };
+      }
+    }
+
+    // End date validation
+    if (matchesAny(search, ['end date', 'ended', 'to date', 'until']) &&
+        matchesAny(search, ['work', 'job', 'employment', 'position'])) {
+      if (latestJob.endDate && !compareDates(value, latestJob.endDate)) {
+        return {
+          isValid: false,
+          message: `End date mismatch: filled "${value}" but resume shows "${latestJob.endDate}"`
+        };
+      }
+    }
+  }
+
+  return { isValid: true, message: '' };
+}
+
+// Validation helper: Add visual warning to field
+function addValidationWarning(element, message) {
+  console.warn(`[Resume Validation] ${message}`);
+
+  // Add warning highlight (orange/yellow instead of green)
+  const originalBackground = element.style.background;
+  element.style.background = '#fef3c7'; // Light yellow
+  element.style.border = '2px solid #f59e0b'; // Orange border
+  element.style.transition = 'background 0.5s ease, border 0.5s ease';
+
+  // Create tooltip/warning message
+  const warningDiv = document.createElement('div');
+  warningDiv.className = 'resume-validation-warning';
+  warningDiv.textContent = '⚠️ ' + message;
+  warningDiv.style.cssText = `
+    position: absolute;
+    background: #fef3c7;
+    border: 2px solid #f59e0b;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #92400e;
+    z-index: 10000;
+    max-width: 300px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    margin-top: 4px;
+  `;
+
+  // Position warning below the field
+  const rect = element.getBoundingClientRect();
+  warningDiv.style.top = (rect.bottom + window.scrollY) + 'px';
+  warningDiv.style.left = (rect.left + window.scrollX) + 'px';
+
+  // Add to page
+  document.body.appendChild(warningDiv);
+
+  // Remove warning after 10 seconds
+  setTimeout(() => {
+    warningDiv.remove();
+    element.style.background = originalBackground;
+    element.style.border = '';
+  }, 10000);
+}
+
 // Fill a single field
 async function fillField(field, userData, learnedResponses) {
   const element = field.element;
   const fieldInfo = getFieldInfo(element);
-  
+
   // Check if we've learned a response for this field
   const learnedValue = findLearnedResponse(fieldInfo, learnedResponses);
   if (learnedValue) {
-    return setFieldValue(field, learnedValue);
+    const filled = setFieldValue(field, learnedValue);
+
+    // Validate filled value against resume
+    if (filled && userData.resumeData) {
+      const validation = validateFieldAgainstResume(fieldInfo, learnedValue, userData.resumeData);
+      if (!validation.isValid) {
+        addValidationWarning(element, validation.message);
+      }
+    }
+
+    return filled;
   }
 
   // Use smart matching to fill the field
   const value = smartMatch(fieldInfo, userData);
   if (value) {
-    return setFieldValue(field, value);
+    const filled = setFieldValue(field, value);
+
+    // Validate filled value against resume
+    if (filled && userData.resumeData) {
+      const validation = validateFieldAgainstResume(fieldInfo, value, userData.resumeData);
+      if (!validation.isValid) {
+        addValidationWarning(element, validation.message);
+      }
+    }
+
+    return filled;
   }
 
   return false;
@@ -706,10 +935,10 @@ function highlightField(element) {
 }
 
 // Auto-fill on page load (if enabled)
-chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], (data) => {
+chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
   // Check if we should auto-fill
   const autoFillMode = data.autoFillMode || 'manual'; // Default to manual
-  const isJobSite = isJobApplicationSite();
+  const isJobSite = await isJobApplicationSite();
 
   console.log(`[Smart Autofill] Mode: ${autoFillMode}, Job site: ${isJobSite}, URL: ${window.location.href}`);
 
@@ -749,9 +978,9 @@ async function autoFillOnLoad() {
 }
 
 // Dynamic form detection - watch for forms added after page load
-chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], (data) => {
+chrome.storage.local.get(['autoFillEnabled', 'autoFillMode'], async (data) => {
   const autoFillMode = data.autoFillMode || 'manual';
-  const isJobSite = isJobApplicationSite();
+  const isJobSite = await isJobApplicationSite();
 
   // Only enable dynamic detection if in automatic mode and on job site
   if (data.autoFillEnabled && autoFillMode === 'automatic' && isJobSite) {

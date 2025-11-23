@@ -14,6 +14,11 @@ const learnedDataList = document.getElementById('learned-data-list');
 const exportCsvBtn = document.getElementById('export-csv');
 const clearHistoryBtn = document.getElementById('clear-history');
 const historyList = document.getElementById('history-list');
+const customSiteInput = document.getElementById('custom-site-input');
+const addCustomSiteBtn = document.getElementById('add-custom-site');
+const allowedSitesList = document.getElementById('allowed-sites-list');
+const resetDefaultSitesBtn = document.getElementById('reset-default-sites');
+const toggleAllSitesBtn = document.getElementById('toggle-all-sites');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -23,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStats();
   checkCurrentSite();
   loadHistory();
+  loadAllowedSites();
 });
 
 // Check if current site is on the job site allowlist
@@ -154,7 +160,129 @@ function parseResume(text) {
     }
   }
 
+  // Extract location (city, state patterns)
+  const locationRegex = /([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*([A-Z]{2})/;
+  const locationMatch = text.match(locationRegex);
+  if (locationMatch) {
+    data.location = `${locationMatch[1]}, ${locationMatch[2]}`;
+  }
+
+  // Extract work experience
+  data.experience = extractWorkExperience(text, lines);
+
   return data;
+}
+
+// Extract work experience from resume
+function extractWorkExperience(text, lines) {
+  const experience = [];
+  const textLower = text.toLowerCase();
+
+  // Find experience section
+  const expSectionPatterns = [
+    'experience',
+    'work history',
+    'employment history',
+    'professional experience',
+    'work experience'
+  ];
+
+  let expStartIndex = -1;
+  let expEndIndex = lines.length;
+
+  for (const pattern of expSectionPatterns) {
+    const index = lines.findIndex(line =>
+      line.toLowerCase().trim() === pattern ||
+      line.toLowerCase().includes(pattern) && line.length < 30
+    );
+    if (index !== -1) {
+      expStartIndex = index;
+      break;
+    }
+  }
+
+  // Find where experience section ends (usually education or skills)
+  if (expStartIndex !== -1) {
+    const endPatterns = ['education', 'skills', 'certifications', 'projects'];
+    for (let i = expStartIndex + 1; i < lines.length; i++) {
+      const lineLower = lines[i].toLowerCase().trim();
+      if (endPatterns.some(p => lineLower === p || (lineLower.includes(p) && lines[i].length < 30))) {
+        expEndIndex = i;
+        break;
+      }
+    }
+
+    // Extract jobs from experience section
+    const expLines = lines.slice(expStartIndex + 1, expEndIndex);
+    let currentJob = null;
+
+    for (let i = 0; i < expLines.length; i++) {
+      const line = expLines[i].trim();
+      if (!line) continue;
+
+      // Date pattern (e.g., "Jan 2020 - Present", "2019-2021", "Jan 2020 - Dec 2022")
+      const datePattern = /(\w+\s+\d{4}|\d{4})\s*[-–—]\s*(\w+\s+\d{4}|\d{4}|Present|Current)/i;
+      const dateMatch = line.match(datePattern);
+
+      // Job title patterns (usually first line or line with dates)
+      const titleIndicators = ['engineer', 'developer', 'manager', 'analyst', 'specialist', 'consultant', 'director', 'coordinator', 'administrator', 'designer', 'architect'];
+      const seemsLikeTitle = titleIndicators.some(indicator =>
+        line.toLowerCase().includes(indicator)
+      ) || (line.length < 60 && line.length > 5 && !dateMatch);
+
+      if (seemsLikeTitle && !dateMatch && !currentJob) {
+        // Start new job entry
+        currentJob = {
+          title: line,
+          company: '',
+          location: '',
+          startDate: '',
+          endDate: '',
+          description: []
+        };
+      } else if (currentJob && !currentJob.company && line.length < 80) {
+        // Next line is likely company
+        const companyMatch = line.match(/^([^|•\-]+?)(?:\s*[|•\-]\s*(.+))?$/);
+        if (companyMatch) {
+          currentJob.company = companyMatch[1].trim();
+
+          // Check for location in same line
+          if (companyMatch[2]) {
+            const locationMatch = companyMatch[2].match(/([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*([A-Z]{2})/);
+            if (locationMatch) {
+              currentJob.location = `${locationMatch[1]}, ${locationMatch[2]}`;
+            }
+          }
+        }
+      } else if (dateMatch && currentJob) {
+        // Extract dates
+        currentJob.startDate = dateMatch[1].trim();
+        currentJob.endDate = dateMatch[2].trim();
+
+        // Check for location in same line
+        if (!currentJob.location) {
+          const locationMatch = line.match(/([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*([A-Z]{2})/);
+          if (locationMatch) {
+            currentJob.location = `${locationMatch[1]}, ${locationMatch[2]}`;
+          }
+        }
+
+        // Save current job and start new one
+        if (currentJob.title && currentJob.company) {
+          experience.push(currentJob);
+        }
+        currentJob = null;
+      }
+    }
+
+    // Add last job if exists
+    if (currentJob && currentJob.title && currentJob.company) {
+      experience.push(currentJob);
+    }
+  }
+
+  console.log('[Resume Parser] Extracted experience:', experience);
+  return experience;
 }
 
 // Show status message
@@ -499,5 +627,218 @@ clearHistoryBtn.addEventListener('click', async () => {
   if (confirm('Are you sure you want to clear all application history? This cannot be undone.')) {
     await chrome.storage.local.set({ applicationHistory: [] });
     loadHistory();
+  }
+});
+
+// ===== SITE MANAGEMENT =====
+
+let showAllSites = false;
+let defaultSitePatterns = [];
+
+// Load and display allowed sites
+async function loadAllowedSites() {
+  try {
+    // Get default sites from content script
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    chrome.tabs.sendMessage(tab.id, { action: 'getDefaultSites' }, (response) => {
+      if (response && response.defaultSites) {
+        defaultSitePatterns = response.defaultSites;
+        displayAllowedSites();
+      }
+    });
+  } catch (error) {
+    console.error('Error loading default sites:', error);
+    // Fallback: display with empty defaults
+    displayAllowedSites();
+  }
+}
+
+// Display allowed sites list
+async function displayAllowedSites() {
+  const data = await chrome.storage.local.get(['allowedSites', 'disabledDefaultSites']);
+  const customSites = data.allowedSites || [];
+  const disabledSites = data.disabledDefaultSites || [];
+
+  allowedSitesList.innerHTML = '';
+
+  // Display custom sites first
+  if (customSites.length > 0) {
+    const customHeader = document.createElement('div');
+    customHeader.style.cssText = 'font-weight: 600; color: #10b981; margin-bottom: 8px; font-size: 12px;';
+    customHeader.textContent = '✨ CUSTOM SITES';
+    allowedSitesList.appendChild(customHeader);
+
+    customSites.forEach(site => {
+      const item = createSiteItem(site, true, false);
+      allowedSitesList.appendChild(item);
+    });
+  }
+
+  // Display default sites (only if showAllSites is true, otherwise show count)
+  if (showAllSites) {
+    const defaultHeader = document.createElement('div');
+    defaultHeader.style.cssText = 'font-weight: 600; color: #6b7280; margin-top: 15px; margin-bottom: 8px; font-size: 12px;';
+    defaultHeader.textContent = '📋 DEFAULT SITES';
+    allowedSitesList.appendChild(defaultHeader);
+
+    defaultSitePatterns.forEach(site => {
+      const isDisabled = disabledSites.includes(site);
+      const item = createSiteItem(site, false, isDisabled);
+      allowedSitesList.appendChild(item);
+    });
+  } else {
+    const defaultCount = defaultSitePatterns.length - disabledSites.length;
+    const summary = document.createElement('div');
+    summary.style.cssText = 'padding: 10px; background: #f3f4f6; border-radius: 6px; margin-top: 10px; text-align: center; color: #6b7280; font-size: 13px;';
+    summary.textContent = `✅ ${defaultCount} default sites enabled`;
+    allowedSitesList.appendChild(summary);
+  }
+
+  if (customSites.length === 0 && !showAllSites) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'text-align: center; padding: 20px; color: #9ca3af; font-size: 13px;';
+    empty.textContent = 'No custom sites added yet';
+    allowedSitesList.appendChild(empty);
+  }
+}
+
+// Create site item element
+function createSiteItem(site, isCustom, isDisabled) {
+  const item = document.createElement('div');
+  item.style.cssText = `
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    margin-bottom: 5px;
+    background: ${isDisabled ? '#fee2e2' : '#f9fafb'};
+    border-radius: 4px;
+    font-size: 12px;
+    ${isDisabled ? 'opacity: 0.6; text-decoration: line-through;' : ''}
+  `;
+
+  const text = document.createElement('span');
+  text.textContent = site;
+  text.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+  item.appendChild(text);
+
+  const buttons = document.createElement('div');
+  buttons.style.cssText = 'display: flex; gap: 5px;';
+
+  if (isCustom) {
+    // Custom sites can be deleted
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = '×';
+    deleteBtn.style.cssText = 'background: #ef4444; color: white; border: none; border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 16px;';
+    deleteBtn.onclick = () => deleteCustomSite(site);
+    buttons.appendChild(deleteBtn);
+  } else {
+    // Default sites can be toggled on/off
+    const toggleBtn = document.createElement('button');
+    toggleBtn.textContent = isDisabled ? '👁️' : '🚫';
+    toggleBtn.title = isDisabled ? 'Enable site' : 'Disable site';
+    toggleBtn.style.cssText = 'background: #6b7280; color: white; border: none; border-radius: 3px; padding: 2px 8px; cursor: pointer;';
+    toggleBtn.onclick = () => toggleDefaultSite(site, isDisabled);
+    buttons.appendChild(toggleBtn);
+  }
+
+  item.appendChild(buttons);
+  return item;
+}
+
+// Add custom site
+addCustomSiteBtn.addEventListener('click', async () => {
+  const site = customSiteInput.value.trim().toLowerCase();
+
+  if (!site) {
+    alert('Please enter a domain or URL pattern');
+    return;
+  }
+
+  // Basic validation
+  if (site.includes(' ')) {
+    alert('Site pattern cannot contain spaces');
+    return;
+  }
+
+  const data = await chrome.storage.local.get(['allowedSites']);
+  const customSites = data.allowedSites || [];
+
+  // Check if already exists
+  if (customSites.includes(site) || defaultSitePatterns.includes(site)) {
+    alert('This site is already in the list');
+    return;
+  }
+
+  customSites.push(site);
+  await chrome.storage.local.set({ allowedSites: customSites });
+
+  customSiteInput.value = '';
+  displayAllowedSites();
+
+  // Show success
+  const originalText = addCustomSiteBtn.textContent;
+  addCustomSiteBtn.textContent = '✅ Added!';
+  setTimeout(() => {
+    addCustomSiteBtn.textContent = originalText;
+  }, 1500);
+});
+
+// Delete custom site
+async function deleteCustomSite(site) {
+  if (!confirm(`Remove "${site}" from allowed sites?`)) return;
+
+  const data = await chrome.storage.local.get(['allowedSites']);
+  const customSites = data.allowedSites || [];
+  const filtered = customSites.filter(s => s !== site);
+  await chrome.storage.local.set({ allowedSites: filtered });
+  displayAllowedSites();
+}
+
+// Toggle default site
+async function toggleDefaultSite(site, isCurrentlyDisabled) {
+  const data = await chrome.storage.local.get(['disabledDefaultSites']);
+  const disabledSites = data.disabledDefaultSites || [];
+
+  if (isCurrentlyDisabled) {
+    // Enable it (remove from disabled list)
+    const filtered = disabledSites.filter(s => s !== site);
+    await chrome.storage.local.set({ disabledDefaultSites: filtered });
+  } else {
+    // Disable it (add to disabled list)
+    disabledSites.push(site);
+    await chrome.storage.local.set({ disabledDefaultSites: disabledSites });
+  }
+
+  displayAllowedSites();
+}
+
+// Reset to default sites
+resetDefaultSitesBtn.addEventListener('click', async () => {
+  if (!confirm('Reset to default sites? This will remove all custom sites and re-enable all default sites.')) {
+    return;
+  }
+
+  await chrome.storage.local.set({
+    allowedSites: [],
+    disabledDefaultSites: []
+  });
+
+  displayAllowedSites();
+
+  alert('✅ Reset to defaults!');
+});
+
+// Toggle showing all sites
+toggleAllSitesBtn.addEventListener('click', () => {
+  showAllSites = !showAllSites;
+  toggleAllSitesBtn.textContent = showAllSites ? '👁️ Show Less' : '👁️ Show All';
+  displayAllowedSites();
+});
+
+// Allow Enter key to add site
+customSiteInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    addCustomSiteBtn.click();
   }
 });
