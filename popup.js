@@ -749,13 +749,31 @@ fillCurrentPageBtn.addEventListener('click', async () => {
         // Update stats
         incrementFormsFilled();
 
-        // Show success with work experience validation info if applicable
+        // Show success with validation info if applicable
         let message = `✅ Successfully filled ${response.fieldsFilled} out of ${response.fieldsTotal} fields!`;
 
+        const corrections = [];
         if (response.workExperienceCorrected && response.workExperienceCorrected > 0) {
-          message += ` Auto-corrected ${response.workExperienceCorrected} work experience fields.`;
-        } else if (response.workExperienceValidated && response.workExperienceValidated > 0) {
-          message += ` Validated ${response.workExperienceValidated} work experience section(s).`;
+          corrections.push(`${response.workExperienceCorrected} work experience`);
+        }
+        if (response.educationCorrected && response.educationCorrected > 0) {
+          corrections.push(`${response.educationCorrected} education`);
+        }
+
+        if (corrections.length > 0) {
+          message += ` Auto-corrected ${corrections.join(' and ')} fields.`;
+        } else {
+          // Show validation info if no corrections were needed
+          const validated = [];
+          if (response.workExperienceValidated && response.workExperienceValidated > 0) {
+            validated.push(`${response.workExperienceValidated} work experience`);
+          }
+          if (response.educationValidated && response.educationValidated > 0) {
+            validated.push(`${response.educationValidated} education`);
+          }
+          if (validated.length > 0) {
+            message += ` Validated ${validated.join(' and ')} section(s).`;
+          }
         }
 
         showStatus(message, 'success');
