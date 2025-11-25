@@ -220,9 +220,15 @@ async function fillCurrentForm(isManualTrigger = false) {
 
     // Validate and auto-correct work experience sections
     console.log('\n[Smart Autofill] Checking for work experience sections to validate...');
-    const validationResult = await validateAndCorrectWorkExperience(data);
+    const workValidationResult = await validateAndCorrectWorkExperience(data);
 
-    if (filledCount === 0 && validationResult.corrected === 0) {
+    // Validate and auto-correct education sections
+    console.log('\n[Smart Autofill] Checking for education sections to validate...');
+    const educationValidationResult = await validateAndCorrectEducation(data);
+
+    const totalCorrected = workValidationResult.corrected + educationValidationResult.corrected;
+
+    if (filledCount === 0 && totalCorrected === 0) {
       const message = skippedCount > 0
         ? `Found ${fields.length} fields but they are already filled. Clear the form to auto-fill again.`
         : `Found ${fields.length} fields but could not match them with your profile data. Try filling them manually so the extension can learn.`;
@@ -234,16 +240,27 @@ async function fillCurrentForm(isManualTrigger = false) {
       };
     }
 
-    const successMessage = validationResult.corrected > 0
-      ? `Filled ${filledCount} fields and auto-corrected ${validationResult.corrected} work experience fields!`
-      : `Successfully filled ${filledCount} fields!`;
+    // Build success message
+    let successMessage = `Successfully filled ${filledCount} fields!`;
+    if (workValidationResult.corrected > 0 || educationValidationResult.corrected > 0) {
+      const corrections = [];
+      if (workValidationResult.corrected > 0) {
+        corrections.push(`${workValidationResult.corrected} work experience`);
+      }
+      if (educationValidationResult.corrected > 0) {
+        corrections.push(`${educationValidationResult.corrected} education`);
+      }
+      successMessage = `Filled ${filledCount} fields and auto-corrected ${corrections.join(' and ')} fields!`;
+    }
 
     return {
       success: true,
       fieldsFilled: filledCount,
       fieldsTotal: fields.length,
-      workExperienceValidated: validationResult.validated,
-      workExperienceCorrected: validationResult.corrected,
+      workExperienceValidated: workValidationResult.validated,
+      workExperienceCorrected: workValidationResult.corrected,
+      educationValidated: educationValidationResult.validated,
+      educationCorrected: educationValidationResult.corrected,
       message: successMessage
     };
   } catch (error) {
@@ -556,6 +573,264 @@ function compareFieldValues(value1, value2) {
   }
 
   return false;
+}
+
+// ===== EDUCATION VALIDATION & AUTO-CORRECTION =====
+
+// Validate and auto-correct education sections against resume
+async function validateAndCorrectEducation(userData) {
+  if (!userData.resumeData || !userData.resumeData.education || userData.resumeData.education.length === 0) {
+    console.log('[Education Validation] No resume education data found - skipping validation');
+    return { validated: 0, corrected: 0 };
+  }
+
+  console.log('[Education Validation] ===== STARTING EDUCATION VALIDATION =====');
+  console.log(`[Education Validation] Resume has ${userData.resumeData.education.length} education entry(s)`);
+
+  // Detect education sections on the page
+  const educationSections = detectEducationSections();
+
+  if (educationSections.length === 0) {
+    console.log('[Education Validation] No education sections detected on this page');
+    return { validated: 0, corrected: 0 };
+  }
+
+  console.log(`[Education Validation] Found ${educationSections.length} education section(s) on page`);
+
+  let totalValidated = 0;
+  let totalCorrected = 0;
+  const fillSpeed = userData.fillSpeed || 500;
+
+  // Validate and correct each section against corresponding resume education entry
+  for (let i = 0; i < educationSections.length && i < userData.resumeData.education.length; i++) {
+    const section = educationSections[i];
+    const resumeEducation = userData.resumeData.education[i];
+
+    console.log(`\n[Education Validation] ===== Validating Education #${i + 1} =====`);
+    console.log(`[Education Validation] Resume: ${resumeEducation.degree} in ${resumeEducation.major} from ${resumeEducation.school}`);
+
+    const result = await validateAndCorrectEducationSection(section, resumeEducation, fillSpeed);
+    totalValidated++;
+    totalCorrected += result.correctedFields;
+
+    console.log(`[Education Validation] ✅ Education #${i + 1}: Validated ${result.validatedFields} fields, Corrected ${result.correctedFields} fields`);
+  }
+
+  console.log(`\n[Education Validation] ===== VALIDATION COMPLETE =====`);
+  console.log(`[Education Validation] Total sections validated: ${totalValidated}`);
+  console.log(`[Education Validation] Total fields corrected: ${totalCorrected}`);
+
+  return { validated: totalValidated, corrected: totalCorrected };
+}
+
+// Detect education sections on the page
+function detectEducationSections() {
+  const sections = [];
+
+  console.log('[Education Validation] Scanning for education sections...');
+
+  // Strategy 1: Look for fieldsets or divs with education keywords
+  const containers = document.querySelectorAll([
+    'fieldset[class*="education"]',
+    'fieldset[class*="school"]',
+    'fieldset[class*="degree"]',
+    'fieldset[class*="university"]',
+    'div[class*="education"][class*="section"]',
+    'div[class*="school"][class*="section"]',
+    'div[data-section*="education"]',
+    'div[data-section*="school"]',
+    '[id*="education"][id*="section"]',
+    '[id*="school"][id*="section"]',
+    'section[class*="education"]',
+    'section[id*="education"]'
+  ].join(', '));
+
+  containers.forEach((container, index) => {
+    if (isVisible(container)) {
+      const fields = findFieldsInSection(container);
+      if (fields.length > 0) {
+        sections.push({ container, fields, index });
+        console.log(`[Education Validation] Found section #${index + 1} with ${fields.length} fields`);
+      }
+    }
+  });
+
+  // Strategy 2: Look for repeated field patterns (school_1, school_2, degree_1, degree_2, etc.)
+  if (sections.length === 0) {
+    const repeatedSections = detectRepeatedEducationFieldPatterns();
+    sections.push(...repeatedSections);
+  }
+
+  // Strategy 3: Look for forms with "Add Another School/Degree" buttons nearby
+  if (sections.length === 0) {
+    const dynamicSections = detectDynamicEducationSections();
+    sections.push(...dynamicSections);
+  }
+
+  return sections;
+}
+
+// Detect repeated education field patterns (e.g., school_1, school_2)
+function detectRepeatedEducationFieldPatterns() {
+  const sections = [];
+  const allInputs = document.querySelectorAll('input, textarea, select');
+
+  // Group fields by index suffix (_1, _2, [1], [2], etc.)
+  const groupedFields = new Map();
+
+  allInputs.forEach(field => {
+    const name = field.name || field.id || '';
+    const match = name.match(/[_\[\-](\d+)[\]\-_]?$/);
+
+    if (match) {
+      const index = match[1];
+      const fieldNameLower = name.toLowerCase();
+
+      // Check if it's an education-related field
+      if (fieldNameLower.includes('school') ||
+          fieldNameLower.includes('university') ||
+          fieldNameLower.includes('college') ||
+          fieldNameLower.includes('degree') ||
+          fieldNameLower.includes('major') ||
+          fieldNameLower.includes('education')) {
+
+        if (!groupedFields.has(index)) {
+          groupedFields.set(index, []);
+        }
+
+        if (isVisible(field) && !field.disabled) {
+          const fieldInfo = getFieldInfo(field);
+          const fieldType = field.tagName.toLowerCase() === 'select' ? 'select' :
+                           field.tagName.toLowerCase() === 'textarea' ? 'textarea' : 'input';
+          groupedFields.get(index).push({ element: field, type: fieldType, info: fieldInfo });
+        }
+      }
+    }
+  });
+
+  // Convert groups to sections
+  groupedFields.forEach((fields, index) => {
+    if (fields.length >= 2) { // At least 2 fields for education section
+      sections.push({ container: null, fields, index: parseInt(index) });
+      console.log(`[Education Validation] Found repeated field pattern #${index} with ${fields.length} fields`);
+    }
+  });
+
+  return sections;
+}
+
+// Detect dynamic education sections (with "Add Another" buttons)
+function detectDynamicEducationSections() {
+  const sections = [];
+
+  // Look for buttons/links with "add" keywords near education fields
+  const addButtons = document.querySelectorAll('button, a, [role="button"]');
+
+  addButtons.forEach(button => {
+    const text = button.textContent.toLowerCase();
+    if (text.includes('add') && (text.includes('school') || text.includes('education') || text.includes('degree') || text.includes('university') || text.includes('college'))) {
+      // Find the nearest form or container
+      let container = button.closest('form, section, div[class*="education"], div[class*="school"]');
+      if (container) {
+        const fields = findFieldsInSection(container);
+        if (fields.length > 0) {
+          sections.push({ container, fields, index: sections.length });
+          console.log(`[Education Validation] Found dynamic section near "Add" button with ${fields.length} fields`);
+        }
+      }
+    }
+  });
+
+  return sections;
+}
+
+// Validate and correct a single education section
+async function validateAndCorrectEducationSection(section, resumeEducation, fillSpeed) {
+  let validatedFields = 0;
+  let correctedFields = 0;
+
+  for (const field of section.fields) {
+    const search = field.info.searchString.toLowerCase();
+    const currentValue = field.element.value || '';
+    let expectedValue = null;
+    let fieldName = '';
+
+    // School/University Name
+    if (matchesAny(search, ['school', 'university', 'college', 'institution', 'school name', 'university name', 'college name']) &&
+        !matchesAny(search, ['high school', 'desired', 'dream'])) {
+      expectedValue = resumeEducation.school;
+      fieldName = 'School';
+    }
+    // Degree
+    else if (matchesAny(search, ['degree', 'degree type', 'level of education', 'education level', 'degree earned']) &&
+             !matchesAny(search, ['desired', 'seeking'])) {
+      expectedValue = resumeEducation.degree;
+      fieldName = 'Degree';
+    }
+    // Major/Field of Study
+    else if (matchesAny(search, ['major', 'field of study', 'area of study', 'concentration', 'specialization', 'subject']) &&
+             !matchesAny(search, ['desired', 'minor'])) {
+      expectedValue = resumeEducation.major;
+      fieldName = 'Major';
+    }
+    // Minor
+    else if (matchesAny(search, ['minor', 'secondary field'])) {
+      expectedValue = resumeEducation.minor;
+      fieldName = 'Minor';
+    }
+    // GPA
+    else if (matchesAny(search, ['gpa', 'grade point', 'grade point average', 'grades'])) {
+      expectedValue = resumeEducation.gpa;
+      fieldName = 'GPA';
+    }
+    // Start Date
+    else if (matchesAny(search, ['start date', 'from date', 'begin date', 'started', 'enrollment date']) &&
+             matchesAny(search, ['education', 'school', 'college', 'university', 'date', 'start'])) {
+      expectedValue = resumeEducation.startDate;
+      fieldName = 'Start Date';
+    }
+    // End Date / Graduation Date
+    else if ((matchesAny(search, ['end date', 'to date', 'until', 'ended', 'graduation date', 'graduated', 'completion date']) &&
+             matchesAny(search, ['education', 'school', 'college', 'university', 'date', 'end', 'graduation'])) ||
+             matchesAny(search, ['grad date', 'degree date'])) {
+      expectedValue = resumeEducation.endDate || resumeEducation.graduationDate || 'Present';
+      fieldName = 'End Date';
+    }
+    // Honors/Awards
+    else if (matchesAny(search, ['honors', 'awards', 'distinction', 'achievements', 'cum laude', 'magna cum laude', 'summa cum laude'])) {
+      expectedValue = resumeEducation.honors;
+      fieldName = 'Honors';
+    }
+
+    if (expectedValue && fieldName) {
+      validatedFields++;
+
+      // Compare values
+      const valuesMatch = compareFieldValues(currentValue, expectedValue);
+
+      if (!valuesMatch) {
+        console.log(`[Education Validation] ⚠️ MISMATCH detected in ${fieldName}`);
+        console.log(`[Education Validation]    Current: "${currentValue}"`);
+        console.log(`[Education Validation]    Expected: "${expectedValue}"`);
+        console.log(`[Education Validation] 🔧 Auto-correcting...`);
+
+        // Auto-correct the field
+        await new Promise(resolve => setTimeout(resolve, fillSpeed));
+        const corrected = setFieldValue(field, expectedValue);
+
+        if (corrected) {
+          correctedFields++;
+          console.log(`[Education Validation] ✅ ${fieldName} corrected to: "${expectedValue}"`);
+        } else {
+          console.log(`[Education Validation] ❌ Failed to correct ${fieldName}`);
+        }
+      } else {
+        console.log(`[Education Validation] ✓ ${fieldName} matches: "${expectedValue}"`);
+      }
+    }
+  }
+
+  return { validatedFields, correctedFields };
 }
 
 // Track application to history
