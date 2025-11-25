@@ -707,20 +707,61 @@ fillSpeedInput.addEventListener('input', (e) => {
 
 // Fill current page
 fillCurrentPageBtn.addEventListener('click', async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  
-  fillCurrentPageBtn.disabled = true;
-  fillCurrentPageBtn.textContent = '⏳ Filling...';
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  chrome.tabs.sendMessage(tab.id, { action: 'fillForm' }, (response) => {
+    if (!tab || !tab.id) {
+      showStatus('❌ No active tab found', 'error');
+      return;
+    }
+
+    // Check if user has saved profile data
+    const data = await chrome.storage.local.get(['fullName', 'email', 'phone']);
+    const hasProfileData = data.fullName || data.email || data.phone;
+
+    if (!hasProfileData) {
+      showStatus('⚠️ Please save your profile data first in the Profile tab', 'error');
+      return;
+    }
+
+    fillCurrentPageBtn.disabled = true;
+    fillCurrentPageBtn.textContent = '⏳ Filling...';
+    showStatus('⏳ Analyzing form fields...', 'info');
+
+    chrome.tabs.sendMessage(tab.id, { action: 'fillForm' }, (response) => {
+      fillCurrentPageBtn.disabled = false;
+      fillCurrentPageBtn.textContent = '⚡ Fill Current Page';
+
+      // Check for Chrome runtime errors
+      if (chrome.runtime.lastError) {
+        console.error('Fill error:', chrome.runtime.lastError);
+        showStatus('❌ Error: Please refresh the page and try again', 'error');
+        return;
+      }
+
+      // Check if response exists
+      if (!response) {
+        showStatus('❌ No response from page. Please refresh and try again.', 'error');
+        return;
+      }
+
+      if (response.success) {
+        // Update stats
+        incrementFormsFilled();
+        showStatus(`✅ Successfully filled ${response.fieldsFilled} out of ${response.fieldsTotal} fields!`, 'success');
+      } else {
+        // Show specific error message
+        const message = response.message || 'Could not fill form';
+        showStatus(`⚠️ ${message}`, 'error');
+        console.log('Fill failed:', response);
+      }
+    });
+  } catch (error) {
     fillCurrentPageBtn.disabled = false;
     fillCurrentPageBtn.textContent = '⚡ Fill Current Page';
-    
-    if (response && response.success) {
-      // Update stats
-      incrementFormsFilled();
-    }
-  });
+    showStatus('❌ Error: ' + error.message, 'error');
+    console.error('Fill button error:', error);
+  }
 });
 
 // Load learned data
