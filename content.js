@@ -119,7 +119,9 @@ const filledFields = new WeakSet();
 // Main form filling function
 async function fillCurrentForm(isManualTrigger = false) {
   try {
-    console.log('[Smart Autofill] Starting form fill, manual:', isManualTrigger);
+    console.log('[Smart Autofill] ===== STARTING FORM FILL =====');
+    console.log('[Smart Autofill] Manual trigger:', isManualTrigger);
+    console.log('[Smart Autofill] Page URL:', window.location.href);
 
     // Get user data and settings from storage
     const data = await chrome.storage.local.get([
@@ -129,14 +131,25 @@ async function fillCurrentForm(isManualTrigger = false) {
     ]);
 
     console.log('[Smart Autofill] User data loaded:', {
-      hasFullName: !!data.fullName,
-      hasEmail: !!data.email,
-      hasPhone: !!data.phone,
-      hasLinkedin: !!data.linkedin,
-      hasLocation: !!data.location,
+      fullName: data.fullName || '(not set)',
+      email: data.email || '(not set)',
+      phone: data.phone || '(not set)',
+      linkedin: data.linkedin || '(not set)',
+      location: data.location || '(not set)',
       hasResumeData: !!data.resumeData,
-      learnedCount: Object.keys(data.learnedResponses || {}).length
+      learnedCount: Object.keys(data.learnedResponses || {}).length,
+      workAuth: data.workAuth || '(not set)'
     });
+
+    // Check if user has ANY profile data
+    const hasAnyData = data.fullName || data.email || data.phone || data.linkedin || data.location;
+    if (!hasAnyData) {
+      console.error('[Smart Autofill] ❌ No profile data found!');
+      return {
+        success: false,
+        message: 'No profile data saved. Please fill out your profile in the extension settings first.'
+      };
+    }
 
     // Only check autoFillEnabled for automatic fills, not manual triggers
     if (!isManualTrigger && !data.autoFillEnabled) {
@@ -149,22 +162,32 @@ async function fillCurrentForm(isManualTrigger = false) {
 
     // Find all form fields
     const fields = findFormFields();
-    console.log(`[Smart Autofill] Found ${fields.length} form fields`);
+    console.log(`[Smart Autofill] Found ${fields.length} total form fields`);
 
     if (fields.length === 0) {
-      return { success: false, message: 'No form fields found on this page' };
+      console.warn('[Smart Autofill] ❌ No form fields detected on page');
+      return {
+        success: false,
+        message: 'No form fields found on this page. Make sure you are on a job application form.'
+      };
     }
 
     let filledCount = 0;
+    let skippedCount = 0;
+    let alreadyFilledCount = 0;
 
     for (const field of fields) {
       // Skip if already filled by us
       if (filledFields.has(field.element)) {
+        alreadyFilledCount++;
         continue;
       }
 
       // Skip if field already has a value (user might have filled it)
       if (field.element.value && field.element.value.trim()) {
+        skippedCount++;
+        const fieldName = field.element.name || field.element.id || 'unknown';
+        console.log(`[Smart Autofill] Skipping pre-filled field: ${fieldName}`);
         continue;
       }
 
@@ -177,7 +200,11 @@ async function fillCurrentForm(isManualTrigger = false) {
       }
     }
 
-    console.log(`[Smart Autofill] ✅ Filled ${filledCount} out of ${fields.length} fields`);
+    console.log(`[Smart Autofill] ===== FILL SUMMARY =====`);
+    console.log(`[Smart Autofill] ✅ Successfully filled: ${filledCount} fields`);
+    console.log(`[Smart Autofill] ⏭️  Skipped (already had values): ${skippedCount} fields`);
+    console.log(`[Smart Autofill] 🔄 Previously filled by extension: ${alreadyFilledCount} fields`);
+    console.log(`[Smart Autofill] 📊 Total fields found: ${fields.length}`);
 
     // Track this application if we filled any fields
     if (filledCount > 0) {
@@ -185,9 +212,14 @@ async function fillCurrentForm(isManualTrigger = false) {
     }
 
     if (filledCount === 0) {
+      const message = skippedCount > 0
+        ? `Found ${fields.length} fields but they are already filled. Clear the form to auto-fill again.`
+        : `Found ${fields.length} fields but could not match them with your profile data. Try filling them manually so the extension can learn.`;
+
+      console.warn('[Smart Autofill] ⚠️', message);
       return {
         success: false,
-        message: `Found ${fields.length} fields but could not fill any. Make sure your profile data is saved.`
+        message: message
       };
     }
 
@@ -282,46 +314,61 @@ async function trackApplication() {
 // Find all form fields on the page
 function findFormFields() {
   const fields = [];
-  
-  // Text inputs, email, tel, url
-  const inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input:not([type])');
+
+  // Text inputs, email, tel, url - expanded to catch more input types
+  const inputs = document.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="search"], input[type="number"], input:not([type])');
+  let visibleInputs = 0;
   inputs.forEach(input => {
     if (isVisible(input) && !input.disabled && !input.readOnly) {
       fields.push({ element: input, type: 'input' });
+      visibleInputs++;
     }
   });
+  console.log(`[Smart Autofill] Found ${visibleInputs} visible text/email/tel/url inputs (${inputs.length} total)`);
 
   // Textareas
   const textareas = document.querySelectorAll('textarea');
+  let visibleTextareas = 0;
   textareas.forEach(textarea => {
     if (isVisible(textarea) && !textarea.disabled && !textarea.readOnly) {
       fields.push({ element: textarea, type: 'textarea' });
+      visibleTextareas++;
     }
   });
+  console.log(`[Smart Autofill] Found ${visibleTextareas} visible textareas (${textareas.length} total)`);
 
   // Select dropdowns
   const selects = document.querySelectorAll('select');
+  let visibleSelects = 0;
   selects.forEach(select => {
     if (isVisible(select) && !select.disabled) {
       fields.push({ element: select, type: 'select' });
+      visibleSelects++;
     }
   });
+  console.log(`[Smart Autofill] Found ${visibleSelects} visible select dropdowns (${selects.length} total)`);
 
   // Radio buttons
   const radios = document.querySelectorAll('input[type="radio"]');
+  let visibleRadios = 0;
   radios.forEach(radio => {
     if (isVisible(radio) && !radio.disabled) {
       fields.push({ element: radio, type: 'radio' });
+      visibleRadios++;
     }
   });
+  console.log(`[Smart Autofill] Found ${visibleRadios} visible radio buttons (${radios.length} total)`);
 
   // Checkboxes
   const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+  let visibleCheckboxes = 0;
   checkboxes.forEach(checkbox => {
     if (isVisible(checkbox) && !checkbox.disabled) {
       fields.push({ element: checkbox, type: 'checkbox' });
+      visibleCheckboxes++;
     }
   });
+  console.log(`[Smart Autofill] Found ${visibleCheckboxes} visible checkboxes (${checkboxes.length} total)`);
 
   return fields;
 }
@@ -526,13 +573,28 @@ async function fillField(field, userData, learnedResponses) {
 
   // Log field info for debugging
   const fieldName = fieldInfo.label || fieldInfo.name || fieldInfo.placeholder || fieldInfo.id || 'unknown';
-  console.log(`[Smart Autofill] Checking field: "${fieldName}" (type: ${field.type})`);
+  const fieldId = fieldInfo.id || '(no id)';
+  const fieldNameAttr = fieldInfo.name || '(no name)';
+
+  console.log(`[Smart Autofill] ===== Analyzing field =====`);
+  console.log(`[Smart Autofill] Field label: "${fieldName}"`);
+  console.log(`[Smart Autofill] Field ID: ${fieldId}`);
+  console.log(`[Smart Autofill] Field name: ${fieldNameAttr}`);
+  console.log(`[Smart Autofill] Field type: ${field.type}`);
+  console.log(`[Smart Autofill] Placeholder: "${fieldInfo.placeholder || '(none)'}"`);
 
   // PRIORITY 1: Try smart matching first (uses profile data: name, email, phone, etc.)
   const value = smartMatch(fieldInfo, userData);
   if (value) {
-    console.log(`[Smart Autofill] ✓ Filling "${fieldName}" with profile data: "${value}"`);
+    console.log(`[Smart Autofill] ✓ MATCH FOUND - Using profile data`);
+    console.log(`[Smart Autofill] ✓ Filling "${fieldName}" with: "${value}"`);
     const filled = setFieldValue(field, value);
+
+    if (filled) {
+      console.log(`[Smart Autofill] ✅ Successfully filled "${fieldName}"`);
+    } else {
+      console.warn(`[Smart Autofill] ⚠️ Failed to set value for "${fieldName}"`);
+    }
 
     // Validate filled value against resume
     if (filled && userData.resumeData) {
@@ -548,8 +610,15 @@ async function fillField(field, userData, learnedResponses) {
   // PRIORITY 2: Check if we've learned a response for this field (custom/unique fields)
   const learnedValue = findLearnedResponse(fieldInfo, learnedResponses);
   if (learnedValue) {
-    console.log(`[Smart Autofill] ✓ Filling "${fieldName}" with learned data: "${learnedValue}"`);
+    console.log(`[Smart Autofill] ✓ LEARNED MATCH - Using learned data`);
+    console.log(`[Smart Autofill] ✓ Filling "${fieldName}" with learned value: "${learnedValue}"`);
     const filled = setFieldValue(field, learnedValue);
+
+    if (filled) {
+      console.log(`[Smart Autofill] ✅ Successfully filled "${fieldName}" with learned data`);
+    } else {
+      console.warn(`[Smart Autofill] ⚠️ Failed to set learned value for "${fieldName}"`);
+    }
 
     // Validate filled value against resume
     if (filled && userData.resumeData) {
@@ -562,7 +631,8 @@ async function fillField(field, userData, learnedResponses) {
     return filled;
   }
 
-  console.log(`[Smart Autofill] ✗ No data found for "${fieldName}"`);
+  console.log(`[Smart Autofill] ✗ NO MATCH - Could not find data for "${fieldName}"`);
+  console.log(`[Smart Autofill] Field search string: "${fieldInfo.searchString.substring(0, 100)}..."`);
   return false;
 }
 
@@ -860,46 +930,75 @@ function findLearnedResponse(fieldInfo, learnedResponses) {
   return null;
 }
 
-// Set field value
+// Set field value with framework compatibility (React, Angular, Vue)
 function setFieldValue(field, value) {
   const element = field.element;
 
   try {
     if (field.type === 'input' || field.type === 'textarea') {
       // For text inputs and textareas
-      element.value = value;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      // Use native setter to bypass React's synthetic events
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      )?.set || Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        'value'
+      )?.set;
+
+      if (nativeInputValueSetter) {
+        nativeInputValueSetter.call(element, value);
+      } else {
+        element.value = value;
+      }
+
+      // Trigger multiple events for framework compatibility
+      element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+
+      // For React specifically
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+
       highlightField(element);
+      console.log(`[Smart Autofill] Set value for ${element.name || element.id}: "${value}"`);
       return true;
     } else if (field.type === 'select') {
       // For select dropdowns
       const option = findBestOption(element, value);
       if (option) {
         element.value = option.value;
-        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        element.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
         highlightField(element);
+        console.log(`[Smart Autofill] Selected option for ${element.name || element.id}: "${option.textContent}"`);
         return true;
+      } else {
+        console.warn(`[Smart Autofill] Could not find matching option for: "${value}"`);
       }
     } else if (field.type === 'radio') {
       // For radio buttons
       if (shouldSelectRadio(element, value)) {
         element.checked = true;
-        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        element.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
         highlightField(element);
+        console.log(`[Smart Autofill] Selected radio button: ${element.name || element.id}`);
         return true;
       }
     } else if (field.type === 'checkbox') {
       // For checkboxes (e.g., terms and conditions)
       if (shouldCheckBox(element)) {
         element.checked = true;
-        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        element.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
         highlightField(element);
+        console.log(`[Smart Autofill] Checked checkbox: ${element.name || element.id}`);
         return true;
       }
     }
   } catch (error) {
-    console.error('Error setting field value:', error);
+    console.error('[Smart Autofill] Error setting field value:', error);
   }
 
   return false;
