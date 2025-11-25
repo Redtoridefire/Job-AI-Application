@@ -123,6 +123,13 @@ async function fillCurrentForm(isManualTrigger = false) {
     console.log('[Smart Autofill] Manual trigger:', isManualTrigger);
     console.log('[Smart Autofill] Page URL:', window.location.href);
 
+    // SmartRecruiters needs extra time for dynamic content
+    const isSmartRecruiters = window.location.hostname.includes('smartrecruiters');
+    if (isSmartRecruiters) {
+      console.log('[Smart Autofill] SmartRecruiters detected - waiting for dynamic content...');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
     // Get user data and settings from storage
     const data = await chrome.storage.local.get([
       'fullName', 'email', 'phone', 'linkedin', 'location',
@@ -755,27 +762,49 @@ function smartMatch(fieldInfo, userData) {
     return userData.linkedin || '';
   }
 
-  // Location/Address fields - expanded patterns
+  // Location/Address fields - MORE SPECIFIC patterns to avoid wrong matches
+
+  // IMPORTANT: Don't auto-fill street address fields - let user enter manually or use learned data
+  // This includes: "address line 1", "address line 2", "street address", "street", "apt", "suite"
   if (matchesAny(search, [
-    'city', 'location', 'address', 'where are you', 'where do you live',
-    'current location', 'residence', 'living in', 'based in',
-    'home address', 'street address', 'mailing address'
+    'address line', 'address 1', 'address 2', 'line 1', 'line 2',
+    'street address', 'street name', 'street number', 'apt', 'apartment',
+    'suite', 'unit', 'building', 'address line1', 'address line2',
+    'addressline1', 'addressline2', 'addr1', 'addr2'
   ])) {
-    // Skip zip/postal codes
-    if (matchesAny(search, ['zip', 'postal', 'postcode', 'zip code'])) return '';
-    // State only
-    if (matchesAny(search, ['state', 'province', 'region']) && !matchesAny(search, ['city', 'address'])) {
-      return userData.location ? userData.location.split(',')[1]?.trim() : '';
-    }
-    // City only
-    if (matchesAny(search, ['city']) && !matchesAny(search, ['state', 'zip'])) {
-      return userData.location ? userData.location.split(',')[0]?.trim() : '';
-    }
-    // Country
-    if (matchesAny(search, ['country'])) {
-      return 'United States'; // Default - can be customized
-    }
-    // Full location
+    console.log('[Smart Autofill] Skipping street address field - user should fill manually');
+    return null; // Don't fill, let user enter or use learned data
+  }
+
+  // Zip/Postal code - skip
+  if (matchesAny(search, ['zip', 'postal', 'postcode', 'zip code', 'zipcode'])) {
+    return null; // Don't fill, let user enter or use learned data
+  }
+
+  // State/Province only
+  if (matchesAny(search, ['state', 'province', 'region']) &&
+      !matchesAny(search, ['city', 'address', 'location', 'where'])) {
+    return userData.location ? userData.location.split(',')[1]?.trim() : '';
+  }
+
+  // City only
+  if (matchesAny(search, ['city']) &&
+      !matchesAny(search, ['state', 'zip', 'address line'])) {
+    return userData.location ? userData.location.split(',')[0]?.trim() : '';
+  }
+
+  // Country
+  if (matchesAny(search, ['country']) && !matchesAny(search, ['city', 'state'])) {
+    return 'United States'; // Default - can be customized
+  }
+
+  // General location questions (where are you located, current location, etc.)
+  // These should get "City, State" format
+  if (matchesAny(search, [
+    'where are you', 'where do you live', 'current location',
+    'your location', 'location', 'based in', 'living in',
+    'residence', 'hometown'
+  ]) && !matchesAny(search, ['street', 'address line', 'line 1', 'line 2'])) {
     return userData.location || '';
   }
 
@@ -869,7 +898,7 @@ function findLearnedResponse(fieldInfo, learnedResponses) {
 
   for (const key of exactKeys) {
     if (learnedResponses[key]) {
-      console.log(`Found exact learned match for "${key}": ${learnedResponses[key]}`);
+      console.log(`[Learning Mode] 🎯 Found exact learned match for "${key}": ${learnedResponses[key]}`);
       return learnedResponses[key];
     }
   }
@@ -892,7 +921,7 @@ function findLearnedResponse(fieldInfo, learnedResponses) {
       if (normalizedKey === normalizedTerm ||
           normalizedKey.includes(normalizedTerm) ||
           normalizedTerm.includes(normalizedKey)) {
-        console.log(`Found fuzzy learned match for "${term}" -> "${learnedKey}": ${learnedValue}`);
+        console.log(`[Learning Mode] 🔍 Found fuzzy learned match for "${term}" -> "${learnedKey}": ${learnedValue}`);
         return learnedValue;
       }
     }
@@ -908,21 +937,21 @@ function findLearnedResponse(fieldInfo, learnedResponses) {
     if ((matchesAny(search, ['job title', 'position', 'role']) &&
          matchesAny(keyLower, ['job title', 'position', 'role'])) ||
         (matchesAny(search, ['title']) && matchesAny(keyLower, ['title']))) {
-      console.log(`Semantic match for job title: ${learnedValue}`);
+      console.log(`[Learning Mode] 🔍 Semantic match for job title: ${learnedValue}`);
       return learnedValue;
     }
 
     // Experience matching
     if (matchesAny(search, ['years of experience', 'experience years']) &&
         matchesAny(keyLower, ['experience', 'years'])) {
-      console.log(`Semantic match for experience: ${learnedValue}`);
+      console.log(`[Learning Mode] 🔍 Semantic match for experience: ${learnedValue}`);
       return learnedValue;
     }
 
     // Salary matching
     if (matchesAny(search, ['salary', 'compensation']) &&
         matchesAny(keyLower, ['salary', 'compensation', 'pay'])) {
-      console.log(`Semantic match for salary: ${learnedValue}`);
+      console.log(`[Learning Mode] 🔍 Semantic match for salary: ${learnedValue}`);
       return learnedValue;
     }
   }
@@ -930,9 +959,10 @@ function findLearnedResponse(fieldInfo, learnedResponses) {
   return null;
 }
 
-// Set field value with framework compatibility (React, Angular, Vue)
+// Set field value with framework compatibility (React, Angular, Vue, SmartRecruiters)
 function setFieldValue(field, value) {
   const element = field.element;
+  const isSmartRecruiters = window.location.hostname.includes('smartrecruiters');
 
   try {
     if (field.type === 'input' || field.type === 'textarea') {
@@ -956,9 +986,19 @@ function setFieldValue(field, value) {
       element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
       element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       element.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event('focus', { bubbles: true, cancelable: true }));
 
       // For React specifically
       element.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+
+      // SmartRecruiters specific - they use custom validation
+      if (isSmartRecruiters) {
+        element.dispatchEvent(new Event('keyup', { bubbles: true, cancelable: true }));
+        element.dispatchEvent(new Event('keydown', { bubbles: true, cancelable: true }));
+        // Trigger focus out
+        element.dispatchEvent(new FocusEvent('focusout', { bubbles: true, cancelable: true }));
+        console.log(`[Smart Autofill] SmartRecruiters detected - using enhanced event triggering`);
+      }
 
       highlightField(element);
       console.log(`[Smart Autofill] Set value for ${element.name || element.id}: "${value}"`);
@@ -1276,11 +1316,14 @@ function initLearningMode() {
 }
 
 async function learnFromForm(form) {
+  console.log('[Learning Mode] 📋 Form submitted - learning from all fields...');
+
   const fields = form.querySelectorAll('input, select, textarea');
   const learnedData = await chrome.storage.local.get(['learnedResponses']);
   const learnedResponses = learnedData.learnedResponses || {};
 
   let learnedCount = 0;
+  let uniqueFieldsLearned = 0;
 
   fields.forEach(field => {
     if (field.value && field.value.trim()) {
@@ -1299,6 +1342,11 @@ async function learnFromForm(form) {
         keys.push(fieldInfo.label.trim());
       }
 
+      if (keys.length > 0) {
+        uniqueFieldsLearned++;
+        console.log(`[Learning Mode] 🧠 Learning: "${keys[0]}" = "${field.value}"`);
+      }
+
       // Store under all possible keys
       keys.forEach(key => {
         learnedResponses[key] = field.value;
@@ -1309,7 +1357,10 @@ async function learnFromForm(form) {
 
   if (learnedCount > 0) {
     await chrome.storage.local.set({ learnedResponses });
-    console.log(`Learned ${learnedCount} field(s) from form submission`);
+    console.log(`[Learning Mode] ✅ Successfully learned ${uniqueFieldsLearned} unique field(s) (${learnedCount} total keys)`);
+    console.log('[Learning Mode] 💾 Data saved - will be used in future fills!');
+  } else {
+    console.log('[Learning Mode] ℹ️ No new data to learn from this form');
   }
 }
 
@@ -1336,7 +1387,10 @@ async function learnFromField(field) {
 
   await chrome.storage.local.set({ learnedResponses });
 
-  console.log(`Learned: ${keys[0]} = ${field.value} (${keys.length} key(s))`);
+  console.log(`[Learning Mode] 🧠 Learned new data!`);
+  console.log(`[Learning Mode] Field: "${keys[0]}"`);
+  console.log(`[Learning Mode] Value: "${field.value}"`);
+  console.log(`[Learning Mode] Stored under ${keys.length} key(s):`, keys);
 }
 
 console.log('Smart Job Autofill extension loaded');
