@@ -748,7 +748,17 @@ fillCurrentPageBtn.addEventListener('click', async () => {
       if (response.success) {
         // Update stats
         incrementFormsFilled();
-        showStatus(`✅ Successfully filled ${response.fieldsFilled} out of ${response.fieldsTotal} fields!`, 'success');
+
+        // Show success with work experience validation info if applicable
+        let message = `✅ Successfully filled ${response.fieldsFilled} out of ${response.fieldsTotal} fields!`;
+
+        if (response.workExperienceCorrected && response.workExperienceCorrected > 0) {
+          message += ` Auto-corrected ${response.workExperienceCorrected} work experience fields.`;
+        } else if (response.workExperienceValidated && response.workExperienceValidated > 0) {
+          message += ` Validated ${response.workExperienceValidated} work experience section(s).`;
+        }
+
+        showStatus(message, 'success');
       } else {
         // Show specific error message
         const message = response.message || 'Could not fill form';

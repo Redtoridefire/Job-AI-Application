@@ -218,7 +218,11 @@ async function fillCurrentForm(isManualTrigger = false) {
       await trackApplication();
     }
 
-    if (filledCount === 0) {
+    // Validate and auto-correct work experience sections
+    console.log('\n[Smart Autofill] Checking for work experience sections to validate...');
+    const validationResult = await validateAndCorrectWorkExperience(data);
+
+    if (filledCount === 0 && validationResult.corrected === 0) {
       const message = skippedCount > 0
         ? `Found ${fields.length} fields but they are already filled. Clear the form to auto-fill again.`
         : `Found ${fields.length} fields but could not match them with your profile data. Try filling them manually so the extension can learn.`;
@@ -230,11 +234,328 @@ async function fillCurrentForm(isManualTrigger = false) {
       };
     }
 
-    return { success: true, fieldsFilled: filledCount, fieldsTotal: fields.length };
+    const successMessage = validationResult.corrected > 0
+      ? `Filled ${filledCount} fields and auto-corrected ${validationResult.corrected} work experience fields!`
+      : `Successfully filled ${filledCount} fields!`;
+
+    return {
+      success: true,
+      fieldsFilled: filledCount,
+      fieldsTotal: fields.length,
+      workExperienceValidated: validationResult.validated,
+      workExperienceCorrected: validationResult.corrected,
+      message: successMessage
+    };
   } catch (error) {
     console.error('[Smart Autofill] Error filling form:', error);
     return { success: false, message: error.message };
   }
+}
+
+// ===== WORK EXPERIENCE VALIDATION & AUTO-CORRECTION =====
+
+// Validate and auto-correct work experience sections against resume
+async function validateAndCorrectWorkExperience(userData) {
+  if (!userData.resumeData || !userData.resumeData.experience || userData.resumeData.experience.length === 0) {
+    console.log('[Work Experience Validation] No resume work experience data found - skipping validation');
+    return { validated: 0, corrected: 0 };
+  }
+
+  console.log('[Work Experience Validation] ===== STARTING WORK EXPERIENCE VALIDATION =====');
+  console.log(`[Work Experience Validation] Resume has ${userData.resumeData.experience.length} job(s)`);
+
+  // Detect work experience sections on the page
+  const workSections = detectWorkExperienceSections();
+
+  if (workSections.length === 0) {
+    console.log('[Work Experience Validation] No work experience sections detected on this page');
+    return { validated: 0, corrected: 0 };
+  }
+
+  console.log(`[Work Experience Validation] Found ${workSections.length} work experience section(s) on page`);
+
+  let totalValidated = 0;
+  let totalCorrected = 0;
+  const fillSpeed = userData.fillSpeed || 500;
+
+  // Validate and correct each section against corresponding resume job
+  for (let i = 0; i < workSections.length && i < userData.resumeData.experience.length; i++) {
+    const section = workSections[i];
+    const resumeJob = userData.resumeData.experience[i];
+
+    console.log(`\n[Work Experience Validation] ===== Validating Job #${i + 1} =====`);
+    console.log(`[Work Experience Validation] Resume Job: ${resumeJob.title} at ${resumeJob.company}`);
+
+    const result = await validateAndCorrectSection(section, resumeJob, fillSpeed);
+    totalValidated++;
+    totalCorrected += result.correctedFields;
+
+    console.log(`[Work Experience Validation] ✅ Job #${i + 1}: Validated ${result.validatedFields} fields, Corrected ${result.correctedFields} fields`);
+  }
+
+  console.log(`\n[Work Experience Validation] ===== VALIDATION COMPLETE =====`);
+  console.log(`[Work Experience Validation] Total sections validated: ${totalValidated}`);
+  console.log(`[Work Experience Validation] Total fields corrected: ${totalCorrected}`);
+
+  return { validated: totalValidated, corrected: totalCorrected };
+}
+
+// Detect work experience sections on the page
+function detectWorkExperienceSections() {
+  const sections = [];
+
+  console.log('[Work Experience Validation] Scanning for work experience sections...');
+
+  // Strategy 1: Look for fieldsets or divs with work/experience/employment keywords
+  const containers = document.querySelectorAll([
+    'fieldset[class*="experience"]',
+    'fieldset[class*="employment"]',
+    'fieldset[class*="work"]',
+    'fieldset[class*="history"]',
+    'div[class*="experience"][class*="section"]',
+    'div[class*="employment"][class*="section"]',
+    'div[class*="work"][class*="history"]',
+    'div[data-section*="experience"]',
+    'div[data-section*="employment"]',
+    '[id*="experience"][id*="section"]',
+    '[id*="employment"][id*="section"]'
+  ].join(', '));
+
+  containers.forEach((container, index) => {
+    if (isVisible(container)) {
+      const fields = findFieldsInSection(container);
+      if (fields.length > 0) {
+        sections.push({ container, fields, index });
+        console.log(`[Work Experience Validation] Found section #${index + 1} with ${fields.length} fields`);
+      }
+    }
+  });
+
+  // Strategy 2: Look for repeated field patterns (job_title_1, job_title_2, etc.)
+  if (sections.length === 0) {
+    const repeatedSections = detectRepeatedFieldPatterns();
+    sections.push(...repeatedSections);
+  }
+
+  // Strategy 3: Look for forms with "Add Another" buttons nearby
+  if (sections.length === 0) {
+    const dynamicSections = detectDynamicWorkSections();
+    sections.push(...dynamicSections);
+  }
+
+  return sections;
+}
+
+// Find all form fields within a section
+function findFieldsInSection(container) {
+  const fields = [];
+
+  // Text inputs
+  const inputs = container.querySelectorAll('input[type="text"], input[type="email"], input[type="tel"], input[type="date"], input:not([type])');
+  inputs.forEach(input => {
+    if (isVisible(input) && !input.disabled && !input.readOnly) {
+      const fieldInfo = getFieldInfo(input);
+      fields.push({ element: input, type: 'input', info: fieldInfo });
+    }
+  });
+
+  // Textareas
+  const textareas = container.querySelectorAll('textarea');
+  textareas.forEach(textarea => {
+    if (isVisible(textarea) && !textarea.disabled && !textarea.readOnly) {
+      const fieldInfo = getFieldInfo(textarea);
+      fields.push({ element: textarea, type: 'textarea', info: fieldInfo });
+    }
+  });
+
+  // Select dropdowns
+  const selects = container.querySelectorAll('select');
+  selects.forEach(select => {
+    if (isVisible(select) && !select.disabled) {
+      const fieldInfo = getFieldInfo(select);
+      fields.push({ element: select, type: 'select', info: fieldInfo });
+    }
+  });
+
+  return fields;
+}
+
+// Detect repeated field patterns (e.g., job_title_1, job_title_2)
+function detectRepeatedFieldPatterns() {
+  const sections = [];
+  const allInputs = document.querySelectorAll('input, textarea, select');
+
+  // Group fields by index suffix (_1, _2, [1], [2], etc.)
+  const groupedFields = new Map();
+
+  allInputs.forEach(field => {
+    const name = field.name || field.id || '';
+    const match = name.match(/[_\[\-](\d+)[\]\-_]?$/);
+
+    if (match) {
+      const index = match[1];
+      if (!groupedFields.has(index)) {
+        groupedFields.set(index, []);
+      }
+
+      if (isVisible(field) && !field.disabled) {
+        const fieldInfo = getFieldInfo(field);
+        const fieldType = field.tagName.toLowerCase() === 'select' ? 'select' :
+                         field.tagName.toLowerCase() === 'textarea' ? 'textarea' : 'input';
+        groupedFields.get(index).push({ element: field, type: fieldType, info: fieldInfo });
+      }
+    }
+  });
+
+  // Convert groups to sections
+  groupedFields.forEach((fields, index) => {
+    if (fields.length >= 3) { // At least 3 fields to be considered a section
+      sections.push({ container: null, fields, index: parseInt(index) });
+      console.log(`[Work Experience Validation] Found repeated field pattern #${index} with ${fields.length} fields`);
+    }
+  });
+
+  return sections;
+}
+
+// Detect dynamic work sections (with "Add Another" buttons)
+function detectDynamicWorkSections() {
+  const sections = [];
+
+  // Look for buttons/links with "add" keywords near work experience fields
+  const addButtons = document.querySelectorAll('button, a, [role="button"]');
+
+  addButtons.forEach(button => {
+    const text = button.textContent.toLowerCase();
+    if (text.includes('add') && (text.includes('job') || text.includes('experience') || text.includes('position') || text.includes('employment'))) {
+      // Find the nearest form or container
+      let container = button.closest('form, section, div[class*="experience"], div[class*="employment"]');
+      if (container) {
+        const fields = findFieldsInSection(container);
+        if (fields.length > 0) {
+          sections.push({ container, fields, index: sections.length });
+          console.log(`[Work Experience Validation] Found dynamic section near "Add" button with ${fields.length} fields`);
+        }
+      }
+    }
+  });
+
+  return sections;
+}
+
+// Validate and correct a single work experience section
+async function validateAndCorrectSection(section, resumeJob, fillSpeed) {
+  let validatedFields = 0;
+  let correctedFields = 0;
+
+  for (const field of section.fields) {
+    const search = field.info.searchString.toLowerCase();
+    const currentValue = field.element.value || '';
+    let expectedValue = null;
+    let fieldName = '';
+
+    // Job Title
+    if (matchesAny(search, ['job title', 'position title', 'title', 'role', 'job_title', 'position']) &&
+        !matchesAny(search, ['desired', 'seeking', 'looking for'])) {
+      expectedValue = resumeJob.title;
+      fieldName = 'Job Title';
+    }
+    // Company
+    else if (matchesAny(search, ['company', 'employer', 'organization', 'company_name', 'employer_name']) &&
+             !matchesAny(search, ['desired', 'dream', 'target'])) {
+      expectedValue = resumeJob.company;
+      fieldName = 'Company';
+    }
+    // Location
+    else if (matchesAny(search, ['location', 'city', 'state', 'work location', 'job location']) &&
+             !matchesAny(search, ['desired', 'preferred'])) {
+      expectedValue = resumeJob.location;
+      fieldName = 'Location';
+    }
+    // Start Date
+    else if (matchesAny(search, ['start date', 'from date', 'begin date', 'started', 'start_date']) &&
+             matchesAny(search, ['work', 'job', 'employment', 'position', 'date', 'start'])) {
+      expectedValue = resumeJob.startDate;
+      fieldName = 'Start Date';
+    }
+    // End Date
+    else if (matchesAny(search, ['end date', 'to date', 'until', 'ended', 'end_date', 'through']) &&
+             matchesAny(search, ['work', 'job', 'employment', 'position', 'date', 'end'])) {
+      expectedValue = resumeJob.endDate || 'Present';
+      fieldName = 'End Date';
+    }
+    // Responsibilities/Description
+    else if (matchesAny(search, ['responsibilities', 'description', 'duties', 'role description', 'job description', 'what you did'])) {
+      expectedValue = resumeJob.description;
+      fieldName = 'Responsibilities';
+    }
+
+    if (expectedValue && fieldName) {
+      validatedFields++;
+
+      // Compare values
+      const valuesMatch = compareFieldValues(currentValue, expectedValue);
+
+      if (!valuesMatch) {
+        console.log(`[Work Experience Validation] ⚠️ MISMATCH detected in ${fieldName}`);
+        console.log(`[Work Experience Validation]    Current: "${currentValue}"`);
+        console.log(`[Work Experience Validation]    Expected: "${expectedValue}"`);
+        console.log(`[Work Experience Validation] 🔧 Auto-correcting...`);
+
+        // Auto-correct the field
+        await new Promise(resolve => setTimeout(resolve, fillSpeed));
+        const corrected = setFieldValue(field, expectedValue);
+
+        if (corrected) {
+          correctedFields++;
+          console.log(`[Work Experience Validation] ✅ ${fieldName} corrected to: "${expectedValue}"`);
+        } else {
+          console.log(`[Work Experience Validation] ❌ Failed to correct ${fieldName}`);
+        }
+      } else {
+        console.log(`[Work Experience Validation] ✓ ${fieldName} matches: "${expectedValue}"`);
+      }
+    }
+  }
+
+  return { validatedFields, correctedFields };
+}
+
+// Compare field values with fuzzy matching
+function compareFieldValues(value1, value2) {
+  if (!value1 && !value2) return true;
+  if (!value1 || !value2) return false;
+
+  const v1 = value1.toString().toLowerCase().trim();
+  const v2 = value2.toString().toLowerCase().trim();
+
+  // Exact match
+  if (v1 === v2) return true;
+
+  // Contains match
+  if (v1.includes(v2) || v2.includes(v1)) return true;
+
+  // Remove punctuation and compare
+  const clean1 = v1.replace(/[,.\-_\s()]+/g, '');
+  const clean2 = v2.replace(/[,.\-_\s()]+/g, '');
+  if (clean1 === clean2) return true;
+
+  // Date comparison (for dates)
+  if (v1.match(/\d{4}/) && v2.match(/\d{4}/)) {
+    const year1 = v1.match(/\d{4}/)[0];
+    const year2 = v2.match(/\d{4}/)[0];
+    if (year1 === year2) {
+      // Years match - check months if present
+      const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+      const month1 = months.findIndex(m => v1.includes(m));
+      const month2 = months.findIndex(m => v2.includes(m));
+      if (month1 === -1 || month2 === -1 || month1 === month2) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 // Track application to history
